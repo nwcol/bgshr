@@ -19,6 +19,10 @@ def load_lookup_table(df_name, sep=","):
 
 
 def subset_lookup_table(df, generation=0, Ns=None, Ts=None, uL=None):
+    """
+    Subset a lookup table to make sure that it represents a single demographic
+    history (`Ts`, `Ns`), `uL`, and sampling `generation`.
+    """
     if type(Ns) == list:
         raise ValueError("Need to implement")
     if type(Ts) == list:
@@ -76,8 +80,159 @@ def generate_cubic_splines(df_sub):
             rs = rs[inds]
             Bs = Bs[inds]
             splines[key] = interpolate.CubicSpline(rs, Bs, bc_type="natural")
-
     return u_vals, s_vals, splines
+
+
+def scale_lookup_table(df, N_target):
+    """
+    Takes an equilibrium lookup table created with moments++ and scales physical
+    parameters r, s, u by N_ref / N_target, so that the table can be used to
+    make predictions with N_e = N_target.
+
+    `N_ref` is automatically determined with the `Ns` column of the input table.
+    If the table is not an equilibrium table, N_ref is taken to be the ancestral
+    population size.
+
+    If scaling places any `r` values > 0.5, these rows are dropped from the
+    table.
+
+    :param df: Lookup table, as a pandas DataFrame
+    :param N_target: Target N_e
+
+    :returns: Scaled lookup table
+    """
+    Ns_strs = set(df["Ns"])
+    Ts_strs = set(df["Ts"])
+    assert len(Ns_strs) == 1
+    assert len(Ts_strs) == 1
+    Ns = next(iter(Ns_strs))
+    Ts = next(iter(Ts_strs))
+
+    # Scale Ns, Ts by N_target / N_ref
+    if str(Ts).isnumeric():
+        N_ref = float(Ns)
+        new_Ns = int(N_target)
+        new_Ts = Ts
+    else:
+        Ns = Ns.split(";")
+        Ts = Ts.split(";")
+        N_ref = float(Ns[-1])
+        new_Ns = ";".join([str(int(N_target / N_ref * float(N))) for N in Ns])
+        new_Ts = ";".join([str(int(N_target / N_ref * float(T))) for T in Ts])
+
+    # Scale parameters by N_ref / N_target
+    c = N_ref / N_target
+    data = dict()
+    data["r"] = c * np.array(df["r"])
+    data["s"] = c * np.array(df["s"])
+    data["uL"] = c * np.array(df["uL"])
+    data["uR"] = c * np.array(df["uR"])
+    data["Ns"] = [new_Ns] * len(df)
+    data["Ts"] = [new_Ts] * len(df)
+    data["B"] = np.array(df["B"])
+    data["Generation"] = N_target / N_ref * np.array(df["Generation"])
+    for col in ["Hl", "Hr"]:
+        data[col] = df[col]
+    df_scaled = pandas.DataFrame(data)
+
+    # Drop any rows where scaling produced r > 0.5
+    if np.any(df_scaled["r"] >= 0.5):
+        df_scaled = df_scaled[df_scaled["r"] < 0.5]
+    return df_scaled
+
+
+def extend_lookup_table_r(df, max_r=0.5, n_steps=3):
+    """
+    Makes filler lookup table entries for large recombination distances. Should
+    be applied only to pure moments++ tables, where approximating B(s, r)~1 at
+    r approaching 0.5 is not too inaccurate.
+
+    :param df: Lookup table, as a pandas DataFrame
+    :param max_r: Maximum recombination distance (default 0.5)
+    :param n_steps: Number of r steps to add
+    """
+    current_max = np.max(df["r"])
+    extend_rs = np.logspace(
+        np.log10(current_max), np.log10(0.5), n_steps + 1)[1:]
+    ss = np.sort(np.unique(df["s"]))
+    uL = np.unique(df["uL"])[0]
+    uR = np.unique(df["uR"])[0]
+    Ns = next(iter(set(df["Ns"])))
+    Ts = next(iter(set(df["Ts"])))
+    dfs = [df]
+    for r in extend_rs:
+        new_data = {
+            "r": np.full(len(ss), r),
+            "s": ss,
+            "uL": np.full(len(ss), uL),
+            "uR": np.full(len(ss), uR),
+            "Ts": np.full(len(ss), Ts),
+            "Ns": np.full(len(ss), Ns),
+            "B": np.ones(len(ss))
+        }
+        new_data.update({col: np.zeros(len(ss)) for col in df.columns
+            if col not in new_data})
+        new_data["r"] = r
+        dfs.append(pandas.DataFrame(new_data))
+    df_extended = pandas.concat(dfs)
+    return df_extended
+
+
+def convert_lookup_table_to_morgans(df, max_M=None):
+    """
+    Adds a column to a lookup table with recombination distances in Morgans.
+
+    Drops any distances greater than `max_dist`. Truncation at `max_dist` is
+    performed with the assumption that B~1 at large recombination fractions.
+
+    If no `max_dist` is given, a value of ~10 M is automatically used.
+
+    :param df: Lookup table
+    :param max_M: Maximum distance to retain, in Morgans (default None uses
+        approx 10 M)
+    """
+    if max_M is None:
+        max_M = inverse_haldane_map_function(0.5 - 1e-9)
+    max_r = haldane_map_function(max_M)
+
+    df_copy = df.copy()
+    rs = np.array(df_copy["r"])
+    ss = np.array(df_copy["s"])
+    uL = np.unique(df_copy["uL"])[0]
+    uR = np.unique(df_copy["uR"])[0]
+    Ns = next(iter(set(df_copy["Ns"])))
+    Ts = next(iter(set(df_copy["Ts"])))
+    current_max_r = np.max(rs)
+    assert current_max_r <= 0.5
+
+    # Find the current max distance in M
+    if current_max_r == 0.5:
+        current_max_M = np.inf
+    else:
+        current_max_M = inverse_haldane_map_function(current_max_r)
+
+    assert max_M < current_max_M
+
+    # splines = generate_cubic_splines(df)[2]
+    # Filter rows with `r` < max_r
+    df_copy = df_copy[df_copy["r"] < max_r]
+    # Extend table to max_r
+    # interp_B = [splines[(uL, s)](max_r) for s in ss]
+    new_data = {
+        "r": np.full(len(ss), max_r),
+        "s": ss,
+        "uL": np.full(len(ss), uL),
+        "uR": np.full(len(ss), uR),
+        "Ts": np.full(len(ss), Ts),
+        "Ns": np.full(len(ss), Ns),
+        # assume that B->1
+        "B": np.ones(len(ss))
+    }
+    new_data.update({col: np.zeros(len(ss)) for col in df.columns
+        if col not in new_data})
+    df_copy = pandas.concat([df_copy, pandas.DataFrame(new_data)])
+    df_copy["M"] = inverse_haldane_map_function(np.array(df_copy["r"]))
+    return df_copy
 
 
 def build_uniform_rmap(r, L):
@@ -212,6 +367,14 @@ def haldane_map_function(rs):
     return 0.5 * (1 - np.exp(-2 * rs))
 
 
+def inverse_haldane_map_function(rs):
+    """
+    Convert recombination fraction `rs` to Morgans, using the inverse of 
+    Haldane's map functon.
+    """
+    return np.abs(-np.log(1 - 2 * rs) / 2)
+
+
 def load_elements(bed_file, L=None):
     """
     From a bed file, load elements. If L is not None, we exlude regions
@@ -325,6 +488,9 @@ def _get_dfe_weights(dfe, s_vals):
 
 
 def integrate_with_weights(vals, weights, u_fac=1):
+    """
+
+    """
     if len(vals) != len(weights):
         raise ValueError("values and weights are not same length")
     out = np.prod([v ** (w * u_fac) for v, w in zip(vals, weights)], axis=0)
@@ -722,7 +888,7 @@ def read_bedfile(fname, filter_col=None, sep=None):
     else:
         split_line = first_line.split()
         if sep is None:
-            sep = "\s+"
+            sep = r"\s+"
     if split_line[1].isnumeric():
         data = pandas.read_csv(fname, sep=sep, header=None)
     else:
