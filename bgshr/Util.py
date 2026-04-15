@@ -1,7 +1,3 @@
-"""
-Utility functions for `bgshr`, including recombination map handling, reading
-input files, and handling input data in lookup tables.
-"""
 
 from datetime import datetime
 import gzip
@@ -45,7 +41,7 @@ def subset_lookup_table(df, generation=0, Ns=None, Ts=None, uL=None):
     return df_sub
 
 
-def generate_cubic_splines(df_sub):
+def generate_cubic_splines(df_sub, use_M=False):
     """
     df_sub is the dataframe subsetted to a single demography, uR and t
 
@@ -74,13 +70,50 @@ def generate_cubic_splines(df_sub):
             key = (u, s)
             # Subset to given s and u values
             df_s_u = df_sub[(df_sub["s"] == s) & (df_sub["uL"] == u)]
-            rs = np.array(df_s_u["r"])
+            if use_M:
+                rs = np.array(df_s_u["M"])
+            else:
+                rs = np.array(df_s_u["r"])
             Bs = np.array(df_s_u["B"])
             inds = np.argsort(rs)
             rs = rs[inds]
             Bs = Bs[inds]
             splines[key] = interpolate.CubicSpline(rs, Bs, bc_type="natural")
     return u_vals, s_vals, splines
+
+
+def generate_linear_splines(df_sub, use_M=False):
+    """
+    Generate linear splines to interpolate B-values across r.
+    """
+    # Check that only a single entry exists for each item
+    assert len(np.unique(np.array(df_sub["Ts"]))) == 1
+    assert len(np.unique(np.array(df_sub["Ns"]))) == 1
+    assert len(np.unique(df_sub["uR"])) == 1
+    assert len(np.unique(df_sub["uL"])) == 1
+    assert len(np.unique(df_sub["Generation"])) == 1
+
+    # Get arrays of selection and mutation values
+    ss = np.array(sorted(list(set(df_sub["s"]))))
+    uLs = np.array(sorted(list(set(df_sub["uL"]))))
+
+    # Store cubic splines of fractional reduction for each pair of u and s, over r
+    splines = {}
+    for uL in uLs:
+        for s in ss:
+            key = (uL, s)
+            # Subset to given s and u values
+            df_s_u = df_sub[(df_sub["s"] == s) & (df_sub["uL"] == uL)]
+            if use_M:
+                rs = np.array(df_s_u["M"])
+            else:
+                rs = np.array(df_s_u["r"])
+            Bs = np.array(df_s_u["B"])
+            inds = np.argsort(rs)
+            rs = rs[inds]
+            Bs = Bs[inds]
+            splines[key] = interpolate.make_interp_spline(rs, Bs, k=1)
+    return uLs, ss, splines
 
 
 def scale_lookup_table(df, N_target):
@@ -121,27 +154,23 @@ def scale_lookup_table(df, N_target):
         new_Ts = ";".join([str(int(N_target / N_ref * float(T))) for T in Ts])
 
     # Scale parameters by N_ref / N_target
-    c = N_ref / N_target
-    data = dict()
-    data["r"] = c * np.array(df["r"])
-    data["s"] = c * np.array(df["s"])
-    data["uL"] = c * np.array(df["uL"])
-    data["uR"] = c * np.array(df["uR"])
-    data["Ns"] = [new_Ns] * len(df)
-    data["Ts"] = [new_Ts] * len(df)
-    data["B"] = np.array(df["B"])
-    data["Generation"] = N_target / N_ref * np.array(df["Generation"])
-    for col in ["Hl", "Hr"]:
-        data[col] = df[col]
-    df_scaled = pandas.DataFrame(data)
+    fac = N_ref / N_target
+    df_scaled = df.copy()
+    df_scaled["r"] *= fac
+    df_scaled["s"] *= fac
+    df_scaled["uL"] *= fac
+    df_scaled["uR"] *= fac
+    df_scaled["Generation"] *= (N_target / N_ref)
+    df_scaled["Ns"] = new_Ns
+    df_scaled["Ts"] = new_Ts
 
     # Drop any rows where scaling produced r > 0.5
-    if np.any(df_scaled["r"] >= 0.5):
-        df_scaled = df_scaled[df_scaled["r"] < 0.5]
+    if np.any(df_scaled["r"] > 0.5):
+        df_scaled = df_scaled[df_scaled["r"] <= 0.5]
     return df_scaled
 
 
-def extend_lookup_table_r(df, max_r=0.5, n_steps=3):
+def fill_in_lookup_table(df, n_steps=20, max_M=10):
     """
     Makes filler lookup table entries for large recombination distances. Should
     be applied only to pure moments++ tables, where approximating B(s, r)~1 at
@@ -151,86 +180,138 @@ def extend_lookup_table_r(df, max_r=0.5, n_steps=3):
     :param max_r: Maximum recombination distance (default 0.5)
     :param n_steps: Number of r steps to add
     """
-    current_max = np.max(df["r"])
-    extend_rs = np.logspace(
-        np.log10(current_max), np.log10(0.5), n_steps + 1)[1:]
     ss = np.sort(np.unique(df["s"]))
-    uL = np.unique(df["uL"])[0]
-    uR = np.unique(df["uR"])[0]
-    Ns = next(iter(set(df["Ns"])))
-    Ts = next(iter(set(df["Ts"])))
-    dfs = [df]
-    for r in extend_rs:
-        new_data = {
-            "r": np.full(len(ss), r),
-            "s": ss,
-            "uL": np.full(len(ss), uL),
-            "uR": np.full(len(ss), uR),
-            "Ts": np.full(len(ss), Ts),
-            "Ns": np.full(len(ss), Ns),
-            "B": np.ones(len(ss))
-        }
-        new_data.update({col: np.zeros(len(ss)) for col in df.columns
-            if col not in new_data})
-        new_data["r"] = r
-        dfs.append(pandas.DataFrame(new_data))
-    df_extended = pandas.concat(dfs)
+    rs = np.sort(np.unique(df["r"]))
+    # rs_extend = np.logspace(np.log10(max_r), np.log10(0.5), n_steps + 1)[1:]
+    if np.max(rs) == 0.5:
+        Ms = inverse_haldane_map_function(rs[:-1])
+
+    else:
+        Ms = inverse_haldane_map_function(rs)
+    Ms_extend = np.logspace(np.log10(Ms[-1]), np.log10(max_M), n_steps + 1)[1:]
+    rs_extend = haldane_map_function(Ms_extend)
+
+    cols = [
+        "r",
+        "s",
+        "uL",
+        "Order",
+        "Generation",
+        "Hr",
+        "pi0",
+        "B",
+        "uR",
+        "Hl",
+        "piN_pi0",
+        "piN_piS",
+        "Ns",
+        "Ts",
+    ]
+    data = {
+        "uL": np.unique(df["uL"])[0],
+        "Order": 0,
+        "Generation": 0,
+        "pi0": np.unique(df["pi0"])[0],
+        "uR": np.unique(df["uR"])[0],
+        "Ns": next(iter(set(df["Ns"]))),
+        "Ts": next(iter(set(df["Ts"]))),
+    }
+
+    # We assume that B~1 across rs_extend
+    data["B"] = 1
+    data["Hr"] = data["pi0"]
+
+    new_data = []
+    for s in ss:
+        data["s"] = s
+        data["Hl"] = np.array(df[df["s"] == s]["Hl"])[0]
+        data["piN_pi0"] = data["Hl"] / data["pi0"]
+        data["piN_piS"] = data["Hl"] / data["Hr"]
+        for r in rs_extend:
+            data["r"] = r
+            new_row = [data[k] for k in cols]
+            new_data.append(new_row)
+    df_new = pandas.DataFrame(new_data, columns=cols)
+    df_extended = pandas.concat([df, df_new], ignore_index=True)
     return df_extended
 
 
-def convert_lookup_table_to_morgans(df, max_M=None):
+def _convert_lookup_table_to_morgans(df, n_steps=10, max_M=10):
     """
-    Adds a column to a lookup table with recombination distances in Morgans.
+    """
+    uLs, ss, splines = generate_cubic_splines(df)
+    uL = uLs[0]
+    rs = np.sort(np.unique(df["r"]))
+    assert np.max(rs) == 0.5
 
-    Drops any distances greater than `max_dist`. Truncation at `max_dist` is
-    performed with the assumption that B~1 at large recombination fractions.
+    cols = [
+        "r",
+        "s",
+        "uL",
+        "Order",
+        "Generation",
+        "Hr",
+        "pi0",
+        "B",
+        "uR",
+        "Hl",
+        "piN_pi0",
+        "piN_piS",
+        "Ns",
+        "Ts",
+    ]
+    data = {
+        "uL": np.unique(df["uL"])[0],
+        "Order": 0,
+        "Generation": 0,
+        "pi0": np.unique(df["pi0"])[0],
+        "uR": np.unique(df["uR"])[0],
+        "Ns": next(iter(set(df["Ns"]))),
+        "Ts": next(iter(set(df["Ts"]))),
+    }
 
-    If no `max_dist` is given, a value of ~10 M is automatically used.
+    # Grid of r to interpolate across
+    Ms = inverse_haldane_map_function(rs[:-1])
+    Ms_insert = np.logspace(np.log10(Ms[-1]), np.log10(max_M), n_steps + 1)[1:]
+    rs_insert = haldane_map_function(Ms_insert)
+
+    max_r_df = df[df["r"] == np.max(df["r"])]
+
+    new_data = []
+    for s in ss:
+        data["s"] = s
+        spline = splines[(uL, s)]
+        df_B = np.array(max_r_df[max_r_df["s"] == s]["B"])[0]
+        data["Hl"] = np.array(max_r_df[max_r_df["s"] == s]["Hl"])[0]
+        for r in rs_insert:
+            data["r"] = r
+            if df_B == 1:
+                data["B"] = 1
+            else:
+                data["B"] = spline(r)
+            data["Hr"] = data["B"] * data["pi0"]
+            data["piN_pi0"] = data["Hl"] / data["pi0"]
+            data["piN_piS"] = data["Hl"] / data["Hr"]
+            new_row = [data[k] for k in cols]
+            new_data.append(new_row)
+    df_new = pandas.DataFrame(new_data, columns=cols)
+    # Drop any rows with r = 0.5
+    df_comb = pandas.concat([df[df["r"] < 0.5], df_new], ignore_index=True)
+    # Add Morgans column
+    df_comb["M"] = inverse_haldane_map_function(df_comb["r"])
+    return df_comb
+
+
+def convert_lookup_table_to_morgans(df):
+    """
+    Adds a column with recombination distances in Morgans to a lookup table.
+
+    Drops rows with r = 0.5.
 
     :param df: Lookup table
-    :param max_M: Maximum distance to retain, in Morgans (default None uses
-        approx 10 M)
     """
-    if max_M is None:
-        max_M = inverse_haldane_map_function(0.5 - 1e-9)
-    max_r = haldane_map_function(max_M)
-
     df_copy = df.copy()
-    rs = np.array(df_copy["r"])
-    ss = np.array(df_copy["s"])
-    uL = np.unique(df_copy["uL"])[0]
-    uR = np.unique(df_copy["uR"])[0]
-    Ns = next(iter(set(df_copy["Ns"])))
-    Ts = next(iter(set(df_copy["Ts"])))
-    current_max_r = np.max(rs)
-    assert current_max_r <= 0.5
-
-    # Find the current max distance in M
-    if current_max_r == 0.5:
-        current_max_M = np.inf
-    else:
-        current_max_M = inverse_haldane_map_function(current_max_r)
-
-    assert max_M < current_max_M
-
-    # splines = generate_cubic_splines(df)[2]
-    # Filter rows with `r` < max_r
-    df_copy = df_copy[df_copy["r"] < max_r]
-    # Extend table to max_r
-    # interp_B = [splines[(uL, s)](max_r) for s in ss]
-    new_data = {
-        "r": np.full(len(ss), max_r),
-        "s": ss,
-        "uL": np.full(len(ss), uL),
-        "uR": np.full(len(ss), uR),
-        "Ts": np.full(len(ss), Ts),
-        "Ns": np.full(len(ss), Ns),
-        # assume that B->1
-        "B": np.ones(len(ss))
-    }
-    new_data.update({col: np.zeros(len(ss)) for col in df.columns
-        if col not in new_data})
-    df_copy = pandas.concat([df_copy, pandas.DataFrame(new_data)])
+    df_copy = df_copy[df_copy["r"] < 0.5]
     df_copy["M"] = inverse_haldane_map_function(np.array(df_copy["r"]))
     return df_copy
 
@@ -360,11 +441,11 @@ def load_bedgraph_recombination_map(
     return ratemap
 
 
-def haldane_map_function(rs):
+def haldane_map_function(ds):
     """
     Returns recombination fraction following Haldane's map function.
     """
-    return 0.5 * (1 - np.exp(-2 * rs))
+    return 0.5 * (1 - np.exp(-2 * ds))
 
 
 def inverse_haldane_map_function(rs):
@@ -372,7 +453,7 @@ def inverse_haldane_map_function(rs):
     Convert recombination fraction `rs` to Morgans, using the inverse of 
     Haldane's map functon.
     """
-    return np.abs(-np.log(1 - 2 * rs) / 2)
+    return np.abs(-0.5 * np.log(1 - 2 * rs))
 
 
 def load_elements(bed_file, L=None):
@@ -446,44 +527,31 @@ def break_up_elements(elements, max_size=500):
     return np.array(elements_br)
 
 
-def weights_gamma_dfe(s_vals, shape, scale):
-    assert np.all(s_vals <= 0)
-    s_vals_sorted = np.sort(s_vals)
-    if np.any(s_vals != s_vals_sorted):
+def weights_gamma_dfe(ss, shape, scale, p_neu=0):
+    """
+    Computes discretized weights for a gamma or gamma-neutral distribution.
+
+    :param ss: Selection coefficients
+    :param shape: Shape parameter
+    :param scale: Scale parameter
+    :param p_neu: Neutral fraction parameter
+
+    :returns: Array of weights with length `len(ss)`
+    """
+    # Make sure ss are sorted negative values
+    assert np.all(ss <= 0)
+    ss_sorted = np.sort(ss)
+    if np.any(ss != ss_sorted):
         raise ValueError("selection values are not sorted")
-
-    pdf = stats.gamma.pdf(-s_vals, shape, scale=scale)
-    grid = np.concatenate(([s_vals[0]], s_vals, [s_vals[-1]]))
-    weights = (grid[2:] - grid[:-2]) / 2 * pdf
-    weights[0] += 1 - stats.gamma.cdf(-s_vals[0], shape, scale=scale)
-    return weights
-
-
-def _weights_gamma_dfe(s_vals, shape, scale):
-    assert np.all(s_vals <= 0)
-    s_vals_sorted = np.sort(s_vals)
-    if np.any(s_vals != s_vals_sorted):
-        raise ValueError("selection values are not sorted")
-    midpoints = (s_vals[1:] + s_vals[:-1]) / 2
+    midpoints = (ss[1:] + ss[:-1]) / 2
     grid = np.concatenate([[-np.inf], midpoints, [0]])
     cdf_evals = stats.gamma.cdf(-grid, shape, scale=scale)
     weights = -np.diff(cdf_evals)
-    return weights
 
-
-def _get_dfe_weights(dfe, s_vals):
-    """
-    Input DFEs should already be scaled as needed.
-    """
-    if dfe["type"] == "gamma":
-        weights = _weights_gamma_dfe(s_vals, dfe["shape"], dfe["scale"])
-    elif dfe["type"] == "gamma_neutral":
-        _weights = _weights_gamma_dfe(s_vals, dfe["shape"], dfe["scale"])
-        p_neu = dfe["p_neu"]
-        weights = np.append(
-            _weights[:-1] * (1 - p_neu), _weights[-1] * (1 - p_neu) + p_neu)
-    else:
-        raise ValueError(f"DFE type {dfe['type']} is unknown")
+    # Place a neutral mass of `p_neu` at s = 0
+    if p_neu > 0:
+        weights *= (1 - p_neu)
+        weights[-1] += (1 - np.sum(weights))
     return weights
 
 
@@ -733,8 +801,7 @@ def _get_time():
 
 def regions_to_mask(regions, L=None):
     """
-    Return a boolean mask array that equals 0 within `regions` and 1 
-    elsewhere.
+    Return a boolean mask array that equals 0 within `regions` and 1 elsewhere.
     """
     if L is None:
         L = regions[-1, 1]
@@ -770,7 +837,7 @@ def collapse_regions(regions):
 def intersect_regions(regions_arrs, L=None):
     """
     Form an array of regions from the intersection of sites in input regions
-    arrays. These may be mask regions, elements, or whatever.
+    arrays.
 
     :param regions_arrs: List of regions arrays.
     :param L: Maximum position to include (default None).
@@ -962,68 +1029,3 @@ def resolve_element_overlaps(element_arrs, L=None):
         covered[~mask] += 1
     assert not np.any(covered > 1)
     return resolved_arrs
-
-
-def read_bedgraph(fname, sep=','):
-    """
-    From a bedgraph-format file, read and return chromosome number(s), an 
-    array of genomic regions and a dictionary of data columns. 
-
-    If the file has one unique chromosome number, returns it as a string of
-    the form `chr00`; if there are several, returns an array of string
-    chromosome numbers of this form for each row.
-    Possible file extensions include but are not limited to .bedgraph, .csv,
-    and .tsv, with column seperator determined by the `sep` argument.
-    """
-    open_func = gzip.open if fname.endswith('.gz') else open
-    with open_func(fname, 'rb') as file:
-        header_line = file.readline().decode().strip().split(sep)
-    # check for proper header format
-    assert header_line[0] in ['chrom', '#chrom']
-    assert header_line[1] in ['chromStart', 'start']
-    assert header_line[2] in ['chromEnd', 'end']
-    fields = header_line[3:]
-    # handle the return of the chromosome number(s)
-    chrom_nums = np.loadtxt(
-        fname, usecols=0, dtype=str, skiprows=1, delimiter=sep
-    )
-    if len(set(chrom_nums)) == 1:
-        ret_chrom = chrom_nums[0]
-    else:
-        # return the whole vector if there are >1 unique chromosome
-        ret_chrom = chrom_nums
-    windows = np.loadtxt(
-        fname, usecols=(1, 2), dtype=int, skiprows=1, delimiter=sep
-    )
-    cols_to_load = tuple(range(3, len(header_line)))
-    arr = np.loadtxt(
-        fname,
-        usecols=cols_to_load,
-        dtype=float,
-        skiprows=1,
-        unpack=True,
-        delimiter=sep
-    )
-    dataT = [arr] if arr.ndim == 1 else [col for col in arr]
-    data = dict(zip(fields, dataT))
-    return ret_chrom, windows, data
-
-
-def write_bedgraph(fname, chrom_num, regions, data, sep=','):
-    """
-    Write a .bedgraph-format file from an array of regions/windows and a 
-    dictionary of data columns.
-    """
-    for field in data:
-        if len(data[field]) != len(regions):
-            raise ValueError(f'data field {data} mismatches region length!')
-    open_func = gzip.open if fname.endswith('.gz') else open
-    fields = list(data.keys())
-    header = sep.join(['#chrom', 'chromStart', 'chromEnd'] + fields) + '\n'
-    with open_func(fname, 'wb') as file:
-        file.write(header.encode())
-        for i, (start, end) in enumerate(regions):
-            ldata = [str(data[field][i]) for field in fields]
-            line = sep.join([chrom_num, str(start), str(end)] + ldata) + '\n'
-            file.write(line.encode())
-    return

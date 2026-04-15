@@ -99,6 +99,10 @@ class TestConvertLookupTableToMorgans(unittest.TestCase):
         self.assertTrue(np.all(df1[df1["M"] == max_M]["B"] == 1))
 
 
+def TestWeightsGammaDFE(unittest.TestCase):
+    pass
+
+
 def test_uniform_rmap():
     L = 100
     for r in [0, 1e-8, 1.5e-6]:

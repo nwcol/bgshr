@@ -1,3 +1,4 @@
+
 import numpy as np
 import warnings
 from scipy import interpolate
@@ -224,44 +225,35 @@ def Bmap(
 #    return B
 
 
-def load_extended_lookup_table(file, num_s_vals=16):
+def _get_distances(xs, windows, rmap):
     """
-    Load a lookup table and extend it to include large selection coefficients
-    using the ClassicBGS module. 
+    """
+    window_mids = np.mean(elements, axis=1)
+    window_map = rmap(window_mids)
+    xs_map = rmap(xs)
+    distances = np.abs(r_xs[np.newaxis, :] - r_midpoints[:, np.newaxis])
+    return distances
 
-    :param file: Pathname of lookup table file (.csv). 
-    :param num_s_vals: Number of selection coefficients to add to the table 
-        using classic BGS theory. These are log-spaced between -1 and the
-        s-value with highest magnitude in the lookup table (default 16).
-    :returns: Extended lookup table and table Ne (`Ne0`). When the table has a 
-        history with several epochs, `Ne0` is None.
-    """
-    df = Util.load_lookup_table(file)
-    df_sub = Util.subset_lookup_table(df)
-    r_vals = np.unique(df_sub["r"])
-    if np.max(r_vals) < 0.5:
-        raise ValueError("Maximum r value in table must equal 0.5")
-    df_s_vals = np.sort(np.unique(df["s"]))
-    s_extend = -np.logspace(0, np.log10(-df_s_vals[0]), num_s_vals + 1)[:-1]
-    Ts = next(iter(df_sub["Ts"]))
-    Ns = next(iter(df_sub["Ns"]))
-    # Equilibrium tables
-    if len(str(Ts).split(";")) == 1:
-        df_extended = ClassicBGS.extend_lookup_table(df_sub, s_extend)
-        Ne0 = next(iter(df_extended['Ns']))
-    # Non-equilibrium tables
-    else:
-        Ts_split = [float(T) for T in Ts.split(";")]
-        Ns_split = [int(N) for N in Ns.split(";")]
-        df_extend = ClassicBGS.build_lookup_table_n_epoch(
-            s_extend, r_vals, Ns_split, Ts_split
-        )
-        df_extended = pandas.concat((df_sub, df_extend), ignore_index=True)
-        # Ensure that all table rows represent epochs with the same strings
-        df_extended["Ts"] = Ts
-        df_extended["Ns"] = Ns
-        Ne0 = None
-    return df_extended, Ne0
+
+def Bvals_fast():
+
+
+    return
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+################################
 
 
 def _table_expected_neu_pi0(df, neu_mut):
@@ -683,19 +675,3 @@ def _get_r_thresholds(df, tolerance=1e-10):
             threshold_idx = beyond_tolerance[0]
             thresholds[i] = r_vals[threshold_idx]
     return thresholds
-
-
-def unlinked_Bval(df, s_vals, dfe, uL_arr):
-    """
-    Compute the unlinked diversity reduction exerted by some class of contrained
-    sites, described by a DFE and an array of deleterious mutation weights.
-    """
-    weights = Util._get_dfe_weights(dfe, s_vals)
-    sub_df = df[df["r"] == 0.5]
-    unit_Bs = [np.unique(sub_df[sub_df["s"] == s]["B"])[0] for s in s_vals]
-    sum_uL = np.sum(uL_arr)
-    Bs = np.ones(len(s_vals), dtype=np.float64)
-    for ii, bb in enumerate(unit_Bs[:-1]):
-        Bs[ii] = bb ** sum_uL
-    unlinked_B = Util.integrate_with_weights(Bs, weights)
-    return unlinked_B

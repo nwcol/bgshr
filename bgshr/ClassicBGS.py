@@ -1,3 +1,4 @@
+
 import numpy as np
 import pandas
 from scipy import linalg
@@ -6,10 +7,40 @@ import warnings
 from . import Util
 
 
+def extend_lookup_table(df_sub, ss, generation=0):
+    """
+    Wraps CBGS extension functions for equilibrium/n-epoch lookup tables.
+    """
+    all_Ts = set(df_sub["Ts"])
+    all_Ns = set(df_sub["Ns"])
+    assert len(all_Ts) == 1
+    assert len(all_Ns) == 1
+    Ts = next(iter(all_Ts))
+    Ns = next(iter(all_Ns))
+
+    rs = np.unique(df_sub["r"])
+    uL = np.unique(df_sub["uL"])[0]
+    uR = np.unique(df_sub["uR"])[0]
+
+    # 1-epoch or equilibrium tables
+    if len(str(Ts).split(";")) == 1:
+        df_new = build_lookup_table(ss, rs, Ne=Ns, uL=uL, uR=uR)
+
+    # n-epoch tables
+    else:
+        Ts = np.array([int(float(x)) for x in Ts.split(";")])
+        Ns = np.array([int(float(x)) for x in Ns.split(";")])
+        df_new = build_lookup_table_n_epoch(
+            ss, rs, Ns, Ts, generations=[generation], uL=uL, uR=uR)
+
+    df_comb = pandas.concat([df_sub, df_new], ignore_index=True)
+    return df_comb
+
+
 def reduction_CBGS(s, u, r, L=1):
     """
-    This is the result given by Nordborg using either a diffusion (1996, wich
-    Charlesworth) or a Markov chain (1996) approach.
+    This is the result given by Nordborg using either a diffusion (1996, with
+    Charlesworth, Eq 3) or a Markov chain (1997) approach.
 
     :param s: The negative selection coefficient.
     :param u: The deleterious mutation rate.
@@ -62,7 +93,7 @@ def classic_BGS(xs, s, u, L=None, rmap=None, elements=[]):
     return B
 
 
-def extend_lookup_table(df_sub, ss, generation=0):
+def extend_lookup_table_1_epoch(df_sub, ss, generation=0):
     """
     Extend a lookup table at present recombination values for given s values.
     """
@@ -170,6 +201,27 @@ def _get_Hl(s, Ne, u):
         return 2 * Ne * u
     else:
         return 4 * Ne * u * np.exp(4 * Ne * s) / (np.exp(4 * Ne * s) - 1) - u / s
+
+
+def unlinked_CBGS(U, shape, scale, p_neu=0, res=100):
+    """
+    Computes unlinked B-values (r = 0.5) using CBGS.
+
+    :param U: The total deleterious mutation rate u * L, where `L` is the
+        mutation target size.
+    :param shape: Shape parameter of the gamma DFE
+    :param scale: Scale parameter of the gamma DFE
+    :param p_neu: Optional neutral mass parameter for the gamma-neutral
+        distribution (default 0)
+    :param res: Resolution of the DFE to apply
+
+    :returns: Scalar unlinked B-value
+    """
+    ss = np.concatenate([-np.logspace(0, -6, res - 1), [0]])
+    weights = Util.weights_gamma_dfe(ss, shape, scale, p_neu=p_neu)
+    unlinked_Bs = reduction_CBGS(ss[:-1], U, 0.5)
+    unlinked_B = Util.integrate_with_weights(unlinked_Bs, weights[:-1])
+    return unlinked_B
 
 
 ###################################################################
@@ -357,8 +409,72 @@ def _shift_Ns_Ts(Ns, Ts, gen):
     Ts_gen.append(max(Ts[-1] - gen, 0))
     return Ns_gen, Ts_gen
 
-# here Ns and Ts are numeric vector, not semi-colon separated vals on a string
-def build_lookup_table_n_epoch(ss, rs, Ns, Ts, generations=None, uL=1e-8, uR=1e-8):
+
+def extend_lookup_table_n_epoch(ss, df_sub, generations=None):
+    """
+    """
+    Ts_str = next(iter(set(df_sub["Ts"])))
+    Ts = np.array([float(x) for x in Ts_str.split(";")])
+    Ns_str = next(iter(set(df_sub["Ns"])))
+    Ns = np.array([float(x) for x in Ns_str.split(";")])
+
+    if len(Ns) != len(Ts):
+        raise ValueError("Ns and Ts must be the same length")
+    if Ts[0] != 0:
+        raise ValueError("Ts must start at time zero (present time)")
+
+    if generations is None:
+        generations = [0]
+
+    r_vals = np.sort(np.unique(df_sub["r"]))
+    uL = np.unique(df_sub["uL"])[0]
+    uR = np.unique(df_sub["uR"])[0]
+
+    cols = df_sub.columns
+    data = {
+        "Ns": Ns_str,
+        "Ts": Ts_str,
+        "uL": uL,
+        "uR": uR,
+        "Order": 0,
+        "pi0": np.unique(df_sub["pi0"])[0]
+    }
+
+    new_data = []
+    for generation in generations:
+        Ns_gen, Ts_gen = _shift_Ns_Ts(Ns, Ts, gen)
+        data["Generation"] = generation
+        data["pi0"] = expected_tmrca_n_epoch_neutral(Ns_gen, Ts_gen) * uL
+        for s in ss:
+            data["s"] = s
+            # Assume negligible change under size history, if strong enough selection
+            data["Hl"] = _get_Hl(s, Ns[0], uL)
+            data["piN_pi0"] = data["Hl"] / data["pi0"]
+            for r in rs:
+                if s == 0:
+                    data["B"] = 1
+                else:
+                    data["B"] = reduction_CBGS_n_epoch(Ns_gen, Ts_gen, s, uL, r)
+                data["Hr"] = data["B"] * data["pi0"]
+                data["r"] = r
+                data["piN_piS"] = data["Hl"] / data["Hr"]
+                new_row = [data[k] for k in cols]
+                new_data.append(new_row)
+    df_new = pandas.DataFrame(new_data, columns=df_sub.columns)
+    df_comb = pandas.concat((df_sub, df_new), ignore_index=True)
+    return df_comb
+
+
+def build_lookup_table_n_epoch(
+    ss,
+    rs,
+    Ns,
+    Ts,
+    generations=None,
+    uL=1e-8,
+    uR=1e-8
+):
+    # here Ns and Ts are numeric vector, not semi-colon separated vals on a string
     cols = [
         "r",
         "s",
