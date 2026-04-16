@@ -9,6 +9,9 @@ from scipy import stats
 import warnings
 
 
+# Lookup table handling.
+
+
 def load_lookup_table(df_name, sep=","):
     df = pandas.read_csv(df_name, sep=sep)
     return df
@@ -94,16 +97,16 @@ def generate_linear_splines(df_sub, use_M=False):
     assert len(np.unique(df_sub["Generation"])) == 1
 
     # Get arrays of selection and mutation values
-    ss = np.array(sorted(list(set(df_sub["s"]))))
-    uLs = np.array(sorted(list(set(df_sub["uL"]))))
+    s_vals = np.array(sorted(list(set(df_sub["s"]))))
+    u_vals = np.array(sorted(list(set(df_sub["uL"]))))
 
     # Store cubic splines of fractional reduction for each pair of u and s, over r
     splines = {}
-    for uL in uLs:
-        for s in ss:
-            key = (uL, s)
+    for u in u_vals:
+        for s in s_vals:
+            key = (u, s)
             # Subset to given s and u values
-            df_s_u = df_sub[(df_sub["s"] == s) & (df_sub["uL"] == uL)]
+            df_s_u = df_sub[(df_sub["s"] == s) & (df_sub["uL"] == u)]
             if use_M:
                 rs = np.array(df_s_u["M"])
             else:
@@ -113,7 +116,7 @@ def generate_linear_splines(df_sub, use_M=False):
             rs = rs[inds]
             Bs = Bs[inds]
             splines[key] = interpolate.make_interp_spline(rs, Bs, k=1)
-    return uLs, ss, splines
+    return u_vals, s_vals, splines
 
 
 def scale_lookup_table(df, N_target):
@@ -170,7 +173,7 @@ def scale_lookup_table(df, N_target):
     return df_scaled
 
 
-def fill_in_lookup_table(df, n_steps=20, max_M=10):
+def fill_in_lookup_table(df, n_steps=16, max_M=10):
     """
     Makes filler lookup table entries for large recombination distances. Should
     be applied only to pure moments++ tables, where approximating B(s, r)~1 at
@@ -236,72 +239,6 @@ def fill_in_lookup_table(df, n_steps=20, max_M=10):
     return df_extended
 
 
-def _convert_lookup_table_to_morgans(df, n_steps=10, max_M=10):
-    """
-    """
-    uLs, ss, splines = generate_cubic_splines(df)
-    uL = uLs[0]
-    rs = np.sort(np.unique(df["r"]))
-    assert np.max(rs) == 0.5
-
-    cols = [
-        "r",
-        "s",
-        "uL",
-        "Order",
-        "Generation",
-        "Hr",
-        "pi0",
-        "B",
-        "uR",
-        "Hl",
-        "piN_pi0",
-        "piN_piS",
-        "Ns",
-        "Ts",
-    ]
-    data = {
-        "uL": np.unique(df["uL"])[0],
-        "Order": 0,
-        "Generation": 0,
-        "pi0": np.unique(df["pi0"])[0],
-        "uR": np.unique(df["uR"])[0],
-        "Ns": next(iter(set(df["Ns"]))),
-        "Ts": next(iter(set(df["Ts"]))),
-    }
-
-    # Grid of r to interpolate across
-    Ms = inverse_haldane_map_function(rs[:-1])
-    Ms_insert = np.logspace(np.log10(Ms[-1]), np.log10(max_M), n_steps + 1)[1:]
-    rs_insert = haldane_map_function(Ms_insert)
-
-    max_r_df = df[df["r"] == np.max(df["r"])]
-
-    new_data = []
-    for s in ss:
-        data["s"] = s
-        spline = splines[(uL, s)]
-        df_B = np.array(max_r_df[max_r_df["s"] == s]["B"])[0]
-        data["Hl"] = np.array(max_r_df[max_r_df["s"] == s]["Hl"])[0]
-        for r in rs_insert:
-            data["r"] = r
-            if df_B == 1:
-                data["B"] = 1
-            else:
-                data["B"] = spline(r)
-            data["Hr"] = data["B"] * data["pi0"]
-            data["piN_pi0"] = data["Hl"] / data["pi0"]
-            data["piN_piS"] = data["Hl"] / data["Hr"]
-            new_row = [data[k] for k in cols]
-            new_data.append(new_row)
-    df_new = pandas.DataFrame(new_data, columns=cols)
-    # Drop any rows with r = 0.5
-    df_comb = pandas.concat([df[df["r"] < 0.5], df_new], ignore_index=True)
-    # Add Morgans column
-    df_comb["M"] = inverse_haldane_map_function(df_comb["r"])
-    return df_comb
-
-
 def convert_lookup_table_to_morgans(df):
     """
     Adds a column with recombination distances in Morgans to a lookup table.
@@ -310,10 +247,26 @@ def convert_lookup_table_to_morgans(df):
 
     :param df: Lookup table
     """
-    df_copy = df.copy()
+    df_copy = pandas.DataFrame({k: df[k] for k in list(df.columns)})
     df_copy = df_copy[df_copy["r"] < 0.5]
     df_copy["M"] = inverse_haldane_map_function(np.array(df_copy["r"]))
     return df_copy
+
+
+def set_lookup_table_max_B_to_1(df):
+    """
+    Set maximum lookup table B entry to `1`.
+
+    Some entries are > 1 by small amounts due to numerical error.
+    """
+    df_copy = pandas.DataFrame({k: df[k] for k in list(df.columns)})
+    Bs = np.array(df_copy["B"])
+    Bs[Bs > 1] = 1
+    df_copy["B"] = Bs
+    return df_copy
+
+
+# Recombination maps.
 
 
 def build_uniform_rmap(r, L):
@@ -456,6 +409,69 @@ def inverse_haldane_map_function(rs):
     return np.abs(-0.5 * np.log(1 - 2 * rs))
 
 
+# Mutation maps, rates
+
+
+def load_mutation_arrays(
+    mut_fname,
+    annot_fnames,
+    keep_zeros=False,
+    masked=False
+):
+    """
+    Load arrays of deleterious mutation rates.
+
+    :param mut_fname: File with average mutation rates
+    :param annot_fnames: Files with deleterious site counts and `scale`, the
+        ratio of average deleterious u to average u, for one or more classes
+        of constrained sites.
+    :param keep_zeros: If False (default), remove windows without deleterious
+        sites. Windows are shared across constraint classes.
+    :param masked: If True (default False), load data from the `masked` columns
+        of `annot_fnames`.
+    """
+    mut_tbl = pandas.read_csv(mut_fname)
+    windows = np.array([mut_tbl["chromStart"], mut_tbl["chromEnd"]]).T
+    if masked:
+        avg_mut = np.array(mut_tbl["avg_mut_masked"])
+    else:
+        avg_mut = np.array(mut_tbl["avg_mut"])
+    avg_mut[np.isnan(avg_mut)] = 0
+    del_sites_arrs = []
+    u_arrs = []
+    U_arrs = []
+    for fname in annot_fnames:
+        annot_tbl = pandas.read_csv(fname)
+        annot_windows = np.array(
+            [annot_tbl["chromStart"], annot_tbl["chromEnd"]]).T
+        if not np.all(annot_windows == windows):
+            raise ValueError(
+                "Annotation/mutation tables have mismatching windows")
+        if masked:
+            del_sites = np.array(annot_tbl["del_sites_masked"])
+            scale = np.array(annot_tbl["scale_masked"])
+        else:
+            del_sites = np.array(annot_tbl["del_sites"])
+            scale = np.array(annot_tbl["scale"])
+        scale[np.isnan(scale)] = 0
+        u_arr = scale * avg_mut
+        U_arr = del_sites * u_arr
+        del_sites_arrs.append(del_sites)
+        u_arrs.append(u_arr)
+        U_arrs.append(U_arr)
+    # Remove windows with 0 total deleterious sites
+    if not keep_zeros:
+        keep = np.where(np.sum(del_sites_arrs, axis=0) > 0)[0]
+        windows = windows[keep]
+        del_sites_arrs = [arr[keep] for arr in del_sites_arrs]
+        u_arrs = [arr[keep] for arr in u_arrs]
+        U_arrs = [arr[keep] for arr in U_arrs]
+    return windows, del_sites_arrs, u_arrs, U_arrs
+
+
+# Elements/constraint windows
+
+
 def load_elements(bed_file, L=None):
     """
     From a bed file, load elements. If L is not None, we exlude regions
@@ -527,6 +543,47 @@ def break_up_elements(elements, max_size=500):
     return np.array(elements_br)
 
 
+# DFE discretization and weighting
+
+
+def integrate_with_weights(vals, weights, u_fac=1):
+    """
+    Takes weighted product of `vals`.
+    """
+    if len(vals) != len(weights):
+        raise ValueError("values and weights are not same length")
+    out = np.prod([v ** (w * u_fac) for v, w in zip(vals, weights)], axis=0)
+    return out
+
+
+def integrate_with_dfe(vals, ss, dfe, u_fac=1):
+    """
+    Computes DFE weights and uses them to integrate across `vals`.
+    """
+    weights = get_dfe_weights(ss, dfe)
+    out = integrate_with_weights(vals, weights, u_fac=u_fac)
+    return out
+
+
+def get_dfe_weights(ss, dfe):
+    """
+    Get weights for a DFE of supported type.
+
+    :param ss: Vector of selection coefficients
+    :param dfe: Dictionary specifying DFE parameters
+
+    :returns: Vector of DFE weights
+    """
+    if dfe["type"] == "gamma":
+        weights = weights_gamma_dfe(ss, dfe["shape"], dfe["scale"])
+    elif dfe["type"] == "gamma_neutral":
+        weights = weights_gamma_dfe(
+            ss, dfe["shape"], dfe["scale"], p_neu=dfe["p_neu"])
+    else:
+        raise ValueError(f"DFE type {df['type']} is unknown")
+    return weights
+
+
 def weights_gamma_dfe(ss, shape, scale, p_neu=0):
     """
     Computes discretized weights for a gamma or gamma-neutral distribution.
@@ -555,14 +612,26 @@ def weights_gamma_dfe(ss, shape, scale, p_neu=0):
     return weights
 
 
-def integrate_with_weights(vals, weights, u_fac=1):
-    """
+# Assorted utilities
 
+
+def _get_max_distances(df, tolerance=1e-10):
     """
-    if len(vals) != len(weights):
-        raise ValueError("values and weights are not same length")
-    out = np.prod([v ** (w * u_fac) for v, w in zip(vals, weights)], axis=0)
-    return out
+    """
+    ss = np.sort(np.unique(df["s"]))
+    thresholds = np.zeros(len(ss), dtype=np.float64)
+    for i, s in enumerate(ss):
+        Bs = np.array(df[df["s"] == s]["B"])
+        Ms = np.array(df[df["s"] == s]["M"])
+        assert np.all(np.sort(Ms) == Ms)
+        deviations = 1 - Bs
+        beyond_tolerance = np.where(deviations < tolerance)[0]
+        if np.all(deviations > 0):
+            thresholds[i] = np.inf
+        else:
+            idx = beyond_tolerance[0]
+            thresholds[i] = Ms[idx]
+    return thresholds
 
 
 def convert_bedgraph_mutation_map(
@@ -657,141 +726,6 @@ def compute_masked_scale(site_map, elements, intervals, mask_regions):
     return del_sites, scale
 
 
-def load_u_array(mut_tbl_file, masked=True):
-    """
-    Load mutation rates from a windowed mutation rate table. The following
-    columns are expected: chrom, chromStart, chromEnd, num_sites, avg_mut,
-    num_sites_masked, avg_mut_masked
-
-    :param mut_tbl_file: Pathname of a .csv/.bedgraph file holding windowed
-        mutation rate information.
-    :param masked: If True (default), return quantities tabulated following
-        the application of a genetic mask. Reads from preexisiting columns
-        in the table "num_sites_masked" and "avg_mut_masked".
-
-    :returns: Array of windows, array of windowed site counts, array of 
-        windowed mutation rates.
-    """
-    mut_tbl = pandas.read_csv(mut_tbl_file)
-    windows = np.array([mut_tbl["chromStart"], mut_tbl["chromEnd"]]).T
-    if masked:
-        num_sites = np.array(mut_tbl["num_sites_masked"])
-        avg_mut = np.array(mut_tbl["avg_mut_masked"])
-        avg_mut[np.isnan(avg_mut)] = 0
-    else:
-        num_sites = np.array(mut_tbl["num_sites"])
-        avg_mut = np.array(mut_tbl["avg_mut"])
-    return windows, num_sites, avg_mut
-
-
-def load_scaled_uL_arrays(
-    mut_tbl_file, 
-    annot_tbl_files, 
-    Ne_scale=1, 
-    uL0=1e-8,
-    filter_zeros=True
-):
-    """
-    Load arrays of deleterious mutation rate factors for one or more classes of
-    functionally constrained elements. These are windowed average rates weighted
-    by the number of constrained sites per window, and further scaled by a unit
-    mutation rate `uL0` and optionally an effective population size ratio. For 
-    use in predicting B values- therefore uses mutation rates tabulated *before* 
-    the application of a genetic mask.
-
-    Optionally scales mutation rates. `Ne_scale` is for use with equilibrium
-    lookup tables. Call the effective size embodied in a lookup table computed
-    for an equilibrium population Ne0. We can predict B with a different Ne
-    parameter by scaling u, r and s by the ratio Ne/Ne0. The scaling on u is
-    implemented with `Ne_scale`. `uL0` is the deleterious mutation rate modeled
-    in the lookup table. 
-
-    :param mut_tbl_file: Pathname of a .csv/.bedgraph file holding windowed
-        mutation rate information.
-    :param annot_tbl_files: List of pathnames to .csv/.bedgraph files holding
-        windowed counts of constrained sites and ratios of deleterious 
-        mutation rates to the average rate. Each file corresponds to a class
-        of constrained genetic elements.
-    :param Ne_scale: Optional linear scale to mutation rates. Accounts for 
-        difference in the desired Ne and the Ne (`Ne0`) represented in an 
-        equilibrium lookup table (default 1).
-    :param u0: Optional mutation rate to scale by (default 1e-8). Should 
-        correspond to the mutation rate in the lookup table being used.
-        Could be set to 1 to load unscaled rates.
-    :param filter_zeros: If True (default), remove all windows where uL is zero  
-        in every annotation class from output windows and uL arrays.
-
-    :returns: Array of windows corresponding to uL values, list of uL arrays.
-    """
-    mut_tbl = pandas.read_csv(mut_tbl_file)
-    windows = np.array([mut_tbl["chromStart"], mut_tbl["chromEnd"]]).T
-    tot_rates = np.array(mut_tbl["avg_mut"])
-    uL_arrs = []
-    for file in annot_tbl_files:
-        annot_tbl = pandas.read_csv(file)
-        _windows = np.array([annot_tbl["chromStart"], annot_tbl["chromEnd"]]).T
-        if not np.all(_windows == windows):
-            raise ValueError(
-                "Annotation/mutation tables have mismatched windows")
-        del_sites = np.array(annot_tbl["del_sites"])
-        factors = np.array(annot_tbl["scale"])
-        factors[np.isnan(factors)] = 0
-        unscaled_uL_arr = del_sites * factors * tot_rates
-        uL_arr = unscaled_uL_arr * Ne_scale / uL0
-        uL_arrs.append(uL_arr)
-    if filter_zeros:
-        nonzero = np.where(np.sum(uL_arrs, axis=0) > 0)[0]
-        uL_windows = windows[nonzero]
-        uL_arrs = [uL_arr[nonzero] for uL_arr in uL_arrs]
-    return uL_windows, uL_arrs
-
-
-def load_uL_arrays(mut_tbl_file, annot_tbl_files, masked=True):
-    """
-    Load arrays recording the average deleterious mutation rate and number of 
-    constrained sites for one or more classes of constrained elements.
-    
-    :param mut_tbl_file: Pathname of a .csv/.bedgraph file holding windowed
-        mutation rate information.
-    :param annot_tbl_files: List of pathnames to .csv/.bedgraph files holding
-        windowed counts of constrained sites and ratios of deleterious 
-        mutation rates to the average rate. Each file corresponds to a class
-        of constrained genetic elements.
-    :param masked: If True (default), return quantities tabulated following
-        the application of a genetic mask. Reads from preexisiting columns
-        in the table, "num_sites_masked" and "avg_mut_masked".
-
-    :returns: List of arrays of constrained site counts, list of arrays of 
-        window-average mutation rates for constrained sites.
-    """
-    mut_tbl = pandas.read_csv(mut_tbl_file)
-    windows = np.array([mut_tbl["chromStart"], mut_tbl["chromEnd"]]).T
-    if masked:
-        tot_rates = np.array(mut_tbl["avg_mut_masked"])
-        tot_rates[np.isnan(tot_rates)] = 0
-    else:
-        tot_rates = np.array(mut_tbl["avg_mut"])
-    uL_arrs = []
-    del_sites_arrs = []
-    for file in annot_tbl_files:
-        annot_tbl = pandas.read_csv(file)
-        _windows = np.array([annot_tbl["chromStart"], annot_tbl["chromEnd"]]).T
-        if not np.all(_windows == windows):
-            raise ValueError(
-                "Annotation/mutation tables have mismatched windows")
-        if masked:
-            del_sites = np.array(annot_tbl["del_sites_masked"])
-            factors = np.array(annot_tbl["scale_masked"])
-        else:
-            del_sites = np.array(annot_tbl["del_sites"])
-            factors = np.array(annot_tbl["scale"])
-        factors[np.isnan(factors)] = 0
-        uL_arr = factors * tot_rates
-        uL_arrs.append(uL_arr)
-        del_sites_arrs.append(del_sites)
-    return del_sites_arrs, uL_arrs
-
-
 def _get_time():
     """
     Return a string representing the time and date with yy-mm-dd format.
@@ -846,7 +780,7 @@ def intersect_regions(regions_arrs, L=None):
     """
     if L is None:
         L = max([regions[-1, 1] for regions in regions_arrs])
-    coverage = np.zeros(L, dtype=np.uint8) 
+    coverage = np.zeros(L, dtype=np.uint8)
     for elements in regions_arrs:
         for (start, end) in elements:
             coverage[start:end] += 1
@@ -862,7 +796,7 @@ def add_regions(regions_arrs, L=None):
     """
     if L is None:
         L = max([regions[-1, 1] for regions in regions_arrs])
-    coverage = np.zeros(L, dtype=np.uint8) 
+    coverage = np.zeros(L, dtype=np.uint8)
     for elements in regions_arrs:
         for (start, end) in elements:
             coverage[start:end] += 1
@@ -873,12 +807,12 @@ def add_regions(regions_arrs, L=None):
 
 def subtract_regions(elements0, elements1, L=None):
     """
-    Get an array of regions representing sites that belong to regions in 
+    Get an array of regions representing sites that belong to regions in
     `elements0` and not `elements1`
     """
     if L is None:
         L = max((elements0[-1, 1], elements1[-1, 1]))
-    boolmask = np.ones(L, dtype=bool) 
+    boolmask = np.ones(L, dtype=bool)
     for (start, end) in elements0:
         boolmask[start:end] = False
     for (start, end) in elements1:
@@ -1003,9 +937,6 @@ def write_uniform_mutation_interval(fname, L, u, chrom):
     }
     pandas.DataFrame(data).to_csv(fname, index=False)
     return
-
-
-####
 
 
 def resolve_element_overlaps(element_arrs, L=None):

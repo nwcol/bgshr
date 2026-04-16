@@ -150,15 +150,7 @@ def _get_pi_dfe(df, dfe):
     df_sub = df[df["r"] == 0]
     ss = np.sort(df_sub["s"])
     assert ss[-1] == 0
-    # add DFEs here
-    if dfe["type"] == "gamma":
-        weights = _get_gamma_weights(ss, dfe["shape"], dfe["scale"])
-    elif dfe["type"] == "gamma_neutral":
-        weights = _get_gamma_neutral_weights(
-            ss, dfe["shape"], dfe["scale"], dfe["p_neu"]
-        )
-    else:
-        raise ValueError(f"DFE type {df['type']} is unknown")
+    weights = Util.get_dfe_weights(ss, dfe)
     Hls = 2 * np.array([df_sub[df_sub["s"] == s]["Hl"].iloc[0] for s in ss])
     return np.sum(Hls * weights)
 

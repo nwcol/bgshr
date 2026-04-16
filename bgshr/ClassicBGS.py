@@ -10,6 +10,9 @@ from . import Util
 def extend_lookup_table(df_sub, ss, generation=0):
     """
     Wraps CBGS extension functions for equilibrium/n-epoch lookup tables.
+
+    :param df_sub: Lookup table to extend
+    :param ss: Selection coefficients with which to extend the table
     """
     all_Ts = set(df_sub["Ts"])
     all_Ns = set(df_sub["Ns"])
@@ -203,24 +206,32 @@ def _get_Hl(s, Ne, u):
         return 4 * Ne * u * np.exp(4 * Ne * s) / (np.exp(4 * Ne * s) - 1) - u / s
 
 
-def unlinked_CBGS(U, shape, scale, p_neu=0, res=100):
+def unlinked_CBGS(Us, dfes=[], ss=None, grid_size=100):
     """
-    Computes unlinked B-values (r = 0.5) using CBGS.
-
-    :param U: The total deleterious mutation rate u * L, where `L` is the
-        mutation target size.
-    :param shape: Shape parameter of the gamma DFE
-    :param scale: Scale parameter of the gamma DFE
-    :param p_neu: Optional neutral mass parameter for the gamma-neutral
-        distribution (default 0)
-    :param res: Resolution of the DFE to apply
+    Computes unlinked B using CBGS for one or more DFEs.
 
     :returns: Scalar unlinked B-value
     """
-    ss = np.concatenate([-np.logspace(0, -6, res - 1), [0]])
-    weights = Util.weights_gamma_dfe(ss, shape, scale, p_neu=p_neu)
-    unlinked_Bs = reduction_CBGS(ss[:-1], U, 0.5)
-    unlinked_B = Util.integrate_with_weights(unlinked_Bs, weights[:-1])
+    if ss is None:
+        ss = np.concatenate([-np.logspace(0, -6, grid_size - 1), [0]])
+    else:
+        # ss must begin at -1 and increase monotonically
+        assert np.all(np.diff(ss) > 0)
+        assert np.min(ss) == -1
+
+    # Multiple DFE; call recursively on each and take the product
+    if len(Us) > 1:
+        assert len(Us) == len(dfes)
+        unlinked_B = np.prod(
+            [unlinked_CBGS(U, dfes=dfe, ss=ss)] for U, dfe in zip(Us, dfes))
+
+    # Single DFE
+    else:
+        U, dfe = Us[0], dfes[0]
+        r = 0.5
+        weights = Util.get_dfe_weights(ss, dfe)
+        unlinked_Bs = reduction_CBGS(ss[:-1], U, r)
+        unlinked_B = Util.integrate_with_weights(unlinked_Bs, weights[:-1])
     return unlinked_B
 
 
