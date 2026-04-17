@@ -206,9 +206,9 @@ def _get_Hl(s, Ne, u):
         return 4 * Ne * u * np.exp(4 * Ne * s) / (np.exp(4 * Ne * s) - 1) - u / s
 
 
-def unlinked_CBGS(Us, dfes=[], ss=None, grid_size=100):
+def unlinked_CBGS(U, dfe, ss=None, grid_size=100):
     """
-    Computes unlinked B using CBGS for one or more DFEs.
+    Computes unlinked B using CBGS for one DFE.
 
     :returns: Scalar unlinked B-value
     """
@@ -217,21 +217,12 @@ def unlinked_CBGS(Us, dfes=[], ss=None, grid_size=100):
     else:
         # ss must begin at -1 and increase monotonically
         assert np.all(np.diff(ss) > 0)
-        assert np.min(ss) == -1
+        assert ss[0] == -1 and ss[-1] == 0
 
-    # Multiple DFE; call recursively on each and take the product
-    if len(Us) > 1:
-        assert len(Us) == len(dfes)
-        unlinked_B = np.prod(
-            [unlinked_CBGS(U, dfes=dfe, ss=ss)] for U, dfe in zip(Us, dfes))
-
-    # Single DFE
-    else:
-        U, dfe = Us[0], dfes[0]
-        r = 0.5
-        weights = Util.get_dfe_weights(ss, dfe)
-        unlinked_Bs = reduction_CBGS(ss[:-1], U, r)
-        unlinked_B = Util.integrate_with_weights(unlinked_Bs, weights[:-1])
+    r = 0.5
+    weights = Util.get_dfe_weights(ss, dfe)
+    unlinked_Bs = reduction_CBGS(ss[:-1], U, r)
+    unlinked_B = Util.integrate_with_weights(unlinked_Bs, weights[:-1])
     return unlinked_B
 
 

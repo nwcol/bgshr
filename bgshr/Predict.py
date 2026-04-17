@@ -155,12 +155,6 @@ def Bvals_dfe(
     """
     Integrate across a DFE.
     """
-    if shape is None or scale is None:
-        raise ValueError("must provide gamma dfe shape and scale")
-
-    if p_neu is None:
-        p_neu = 0
-
     if ss is None:
         ss = np.sort(list(set([k[1] for k in splines.keys()])))
 

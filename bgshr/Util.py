@@ -176,8 +176,8 @@ def scale_lookup_table(df, N_target):
 def fill_in_lookup_table(df, n_steps=16, max_M=10):
     """
     Makes filler lookup table entries for large recombination distances. Should
-    be applied only to pure moments++ tables, where approximating B(s, r)~1 at
-    r approaching 0.5 is not too inaccurate.
+    be applied only to pure moments++ tables, where using B~1 at large `r` is
+    not too bad an approximation.
 
     :param df: Lookup table, as a pandas DataFrame
     :param max_r: Maximum recombination distance (default 0.5)
@@ -412,6 +412,49 @@ def inverse_haldane_map_function(rs):
 # Mutation maps, rates
 
 
+def compute_windowed_mutation_rate(elements, windows, u_map, fill="mean"):
+    """
+    Computes sums of the deleterious mutation rate in an array of elements,
+    divided into `windows`.
+    """
+    if fill == "mean":
+        fill = np.nanmean(u_map)
+    else:
+        assert isinstance(fill, float)
+
+    L = len(u_map)
+    # Windows shouldn't extend beyond the end of the chromosome
+    assert windows[-1, 1] <= L
+
+    element_map = ~regions_to_mask(elements, L=L)
+    window_sites = np.zeros(len(windows), np.int64)
+    window_U = np.zeros(len(windows), np.float64)
+
+    for i, (start, end) in enumerate(windows):
+        n_sites = np.sum(element_map[start:end])
+        if n_sites == 0:
+            continue
+        window_sites[i] = n_sites
+        u_elem = u_map[start:end][element_map[start:end]]
+        if np.all(np.isnan(u_elem)):
+            window_U[i] = fill * len(u_elem)
+        else:
+            window_U[i] = np.nansum(u_elem)
+            window_U[i] += fill * np.count_nonzero(np.isnan(u_elem))
+    return window_sites, window_U
+
+
+def filter_empty_windows(windows, U_arrs):
+    """
+    Filters out windows with deleterious mutation rate = 0
+    """
+    tot_U = np.sum(U_arrs, axis=0)
+    keep = tot_U > 0
+    filtered_windows = windows[keep]
+    filtered_U_arrs = [Us[keep] for Us in U_arrs]
+    return filtered_windows, filtered_U_arrs
+
+
 def load_mutation_arrays(
     mut_fname,
     annot_fnames,
@@ -615,7 +658,7 @@ def weights_gamma_dfe(ss, shape, scale, p_neu=0):
 # Assorted utilities
 
 
-def _get_max_distances(df, tolerance=1e-10):
+def get_max_distances(df, tolerance=1e-10):
     """
     """
     ss = np.sort(np.unique(df["s"]))
