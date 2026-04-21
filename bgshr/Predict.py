@@ -290,6 +290,7 @@ def Bvals_fast(
             rmap,
             r,
             L,
+            ss,
             max_dists,
             dfes,
             Bmap,
@@ -324,7 +325,7 @@ def Bvals_fast(
 
     # Get grid of s and u values
     uLs = np.sort(list(set([k[0] for k in splines.keys()])))
-    if ss is not None:
+    if ss is None:
         ss = np.sort(list(set([k[1] for k in splines.keys()])))
         # assert np.min(ss) == -1 and np.max(ss) == 0
     assert len(uLs) == 1
