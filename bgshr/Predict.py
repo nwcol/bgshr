@@ -241,12 +241,12 @@ def split_U_windows(windows, U_arrs):
 def Bvals_fast(
     xs,
     splines,
-    windows=[],
+    windows=None,
     U_arrs=None,
-    u=None,
     rmap=None,
     r=None,
     L=None,
+    ss=None,
     max_dists=None,
     dfes=None,
     Bmap=None,
@@ -263,6 +263,9 @@ def Bvals_fast(
 
     """
 
+    if windows is None or U_arrs is None:
+        raise Valuerror("Must provide `windows` and `U_arrs`")
+
     # Build recombination map if needed
     if rmap is None:
         if L is None:
@@ -271,13 +274,6 @@ def Bvals_fast(
             warnings.warn("No recombination rate provided, assuming r=1e-8")
             r = 1e-8
         rmap = Util.build_uniform_rmap(r, L)
-
-    # Construct mutation maps if none were given
-    if U_arrs is None:
-        if u is None:
-            warnings.warn("No mutation rate provided, assuming u=1e-8")
-            u = 1e-8
-            raise Valuerror("NOT IMPLEMENTED YET")
 
     # The function calls itself recursively to handly many focal sites
     if len(xs) > chunk_size:
@@ -291,7 +287,6 @@ def Bvals_fast(
             splines,
             windows,
             U_arrs,
-            u,
             rmap,
             r,
             L,
@@ -315,6 +310,9 @@ def Bvals_fast(
                 chunk_Bs.append(Bvals_fast(chunk, *args))
 
         Bs_out = np.concatenate(chunk_Bs)
+
+        #TODO Handle Bs when DFEs weren't given and arrays are returned
+
         return Bs_out
 
     # Apply interference correction if Bmap was given
@@ -326,12 +324,13 @@ def Bvals_fast(
 
     # Get grid of s and u values
     uLs = np.sort(list(set([k[0] for k in splines.keys()])))
-    ss = np.sort(list(set([k[1] for k in splines.keys()])))
-    assert np.min(ss) == -1 and np.max(ss) == 0
+    if ss is not None:
+        ss = np.sort(list(set([k[1] for k in splines.keys()])))
+        # assert np.min(ss) == -1 and np.max(ss) == 0
     assert len(uLs) == 1
     uL = uLs[0]
 
-    # Scale deleterious mutation rates
+    # Scale deleterious mutation rates by `uL` from the table
     U_arrs = [Us / uL for Us in U_arrs]
 
     # Instantiate B arrays

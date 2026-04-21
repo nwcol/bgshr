@@ -253,11 +253,10 @@ def convert_lookup_table_to_morgans(df):
     return df_copy
 
 
-def set_lookup_table_max_B_to_1(df):
+def cap_max_lookup_table_B(df):
     """
-    Set maximum lookup table B entry to `1`.
-
-    Some entries are > 1 by small amounts due to numerical error.
+    Set maximum lookup table B entry to `1`. Without this, some entries may be
+    > 1 by small amounts due to numerical error.
     """
     df_copy = pandas.DataFrame({k: df[k] for k in list(df.columns)})
     Bs = np.array(df_copy["B"])
