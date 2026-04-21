@@ -42,11 +42,48 @@ def extend_lookup_table(df_sub, ss, generation=0):
 
 def reduction_CBGS(s, u, r, L=1):
     """
-    This is the result given by Nordborg using either a diffusion (1996, with
-    Charlesworth, Eq 3) or a Markov chain (1997) approach.
+    Compute a diversity reduction with classic BGS theory. Valid for `s`
+    where 2N_e*s >> 1.
 
-    :param s: The negative selection coefficient.
-    :param u: The deleterious mutation rate.
+    Derived from Charlesworth (2012) [Appendix], without making the assumption
+    that s and r are small.
+
+    :param s: Selection coefficient. Heterozygotes with the deleterious allele
+        have fitness (1+s). Should be < 0.
+    :param u: Deleterious haploid mutation rate.
+    :param r: Recombination rate between focal site and constrained locus.
+    :param L: Optional scaling factor for the mutation rate. Assumes a non-
+        recombining locus of length `L` and average per-base mutation rate `u`.
+    """
+    return np.exp(s * u * (1 + (2 * r * (1+s) - s) ** 2) / (r * (1+s) - s) ** 2)
+
+
+def unlinked_reduction_CBGS(s, u, L=1):
+    """
+    Compute a diversity reduction due to an unlinked locus, using classic BGS
+    theory.
+
+    Given by Charlesworth (2012) [Appendix].
+
+    :param s: Selection coefficient. Heterozygotes with the deleterious allele
+        have fitness (1+s). Should be < 0.
+    :param u: Deleterious haploid mutation rate.
+    :param L: Optional scaling factor for the mutation rate. Assumes a non-
+        recombining locus of length `L` and average per-base mutation rate `u`.
+    """
+    return np.exp(-8 * -s * u * L / (1 + -s) ** 2)
+
+
+def approx_reduction_CBGS(s, u, r, L=1):
+    """
+    Compute diversity reduction with classic BGS theory; valid for small `r`.
+    This function should not be used in prediction.
+
+    Given by Nordborg and Charlesworth (1996) using diffusion and Nordborg
+    (1997) using a Markov chain approach.
+
+    :param s: Selection coefficient for the heterozygote.
+    :param u: The deleterious haploid mutation rate.
     :param r: The recombination rate between the focal site and the selected
         locus.
     :param L: Optionally, a scaling factor for the mutation rate, assuming a
@@ -410,61 +447,6 @@ def _shift_Ns_Ts(Ns, Ts, gen):
     Ns_gen.append(Ns[-1])
     Ts_gen.append(max(Ts[-1] - gen, 0))
     return Ns_gen, Ts_gen
-
-
-def extend_lookup_table_n_epoch(ss, df_sub, generations=None):
-    """
-    """
-    Ts_str = next(iter(set(df_sub["Ts"])))
-    Ts = np.array([float(x) for x in Ts_str.split(";")])
-    Ns_str = next(iter(set(df_sub["Ns"])))
-    Ns = np.array([float(x) for x in Ns_str.split(";")])
-
-    if len(Ns) != len(Ts):
-        raise ValueError("Ns and Ts must be the same length")
-    if Ts[0] != 0:
-        raise ValueError("Ts must start at time zero (present time)")
-
-    if generations is None:
-        generations = [0]
-
-    r_vals = np.sort(np.unique(df_sub["r"]))
-    uL = np.unique(df_sub["uL"])[0]
-    uR = np.unique(df_sub["uR"])[0]
-
-    cols = df_sub.columns
-    data = {
-        "Ns": Ns_str,
-        "Ts": Ts_str,
-        "uL": uL,
-        "uR": uR,
-        "Order": 0,
-        "pi0": np.unique(df_sub["pi0"])[0]
-    }
-
-    new_data = []
-    for generation in generations:
-        Ns_gen, Ts_gen = _shift_Ns_Ts(Ns, Ts, gen)
-        data["Generation"] = generation
-        data["pi0"] = expected_tmrca_n_epoch_neutral(Ns_gen, Ts_gen) * uL
-        for s in ss:
-            data["s"] = s
-            # Assume negligible change under size history, if strong enough selection
-            data["Hl"] = _get_Hl(s, Ns[0], uL)
-            data["piN_pi0"] = data["Hl"] / data["pi0"]
-            for r in rs:
-                if s == 0:
-                    data["B"] = 1
-                else:
-                    data["B"] = reduction_CBGS_n_epoch(Ns_gen, Ts_gen, s, uL, r)
-                data["Hr"] = data["B"] * data["pi0"]
-                data["r"] = r
-                data["piN_piS"] = data["Hl"] / data["Hr"]
-                new_row = [data[k] for k in cols]
-                new_data.append(new_row)
-    df_new = pandas.DataFrame(new_data, columns=df_sub.columns)
-    df_comb = pandas.concat((df_sub, df_new), ignore_index=True)
-    return df_comb
 
 
 def build_lookup_table_n_epoch(
