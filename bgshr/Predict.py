@@ -11,7 +11,10 @@ from . import Util, ClassicBGS, Predict
 
 
 def get_Bmap(xs, Bs):
-
+    """
+    Get a function that interpolates B-values at non-focal sites, using cubic
+    splines.
+    """
     return interpolate.CubicSpline(xs, Bs, bc_type="natural")
 
 
@@ -254,19 +257,21 @@ def Bvals_fast(
     n_cores=1
 ):
     """
-    Designed to handle multiple DFEs efficiently.
+    Get predicted diversity reductions given one or more classes of constrained
+    elements, each with a distinct DFE. The deleterious mutation rates of each
+    class (`U_arrs`) must be specified on a set of genomic `windows` that are
+    shared across classes. Designed to handle multiple DFEs efficiently.
 
-    Features/things to note:
+    Features:
     - If DFE parameters are given, integrates across B-values. Otherwise returns
       arrays with B-values for each selection coefficient.
     - Interference correction: local scaling is handled internally
 
     """
-
     if windows is None or U_arrs is None:
         raise Valuerror("Must provide `windows` and `U_arrs`")
 
-    # Build recombination map if needed
+    # Build a uniform recombination map if needed
     if rmap is None:
         if L is None:
             L = max([xs[-1], elements[-1][1]])
@@ -275,12 +280,12 @@ def Bvals_fast(
             r = 1e-8
         rmap = Util.build_uniform_rmap(r, L)
 
-    # The function calls itself recursively to handly many focal sites
+    # The function calls itself recursively to handle many focal sites
     if len(xs) > chunk_size:
         # Set up "chunks"; continuous blocks of focal sites (xs)
         n_chunks = int(np.ceil(len(xs) / chunk_size))
-        chunks = [
-            xs[i * chunk_size:(i + 1) * chunk_size] for i in range(n_chunks)]
+        chunks = [xs[i * chunk_size:(i + 1) * chunk_size]
+                  for i in range(n_chunks)]
 
         # Static arguments
         args = (
@@ -298,78 +303,82 @@ def Bvals_fast(
             n_cores
         )
 
-        # Parallelize
+        # If several cores were alloted, parallelize computation across them
         if n_cores > 1:
             map_args = [chunks] + [[arg] * n_chunks for arg in args]
             with futures.ProcessPoolExecutor(max_workers=n_cores) as ex:
                 chunk_Bs = list(ex.map(Bvals_fast, *map_args))
-
-        # Loop
+        # Otherwise, perform vectorized computations in a loop
         else:
             chunk_Bs = []
             for chunk in chunks:
                 chunk_Bs.append(Bvals_fast(chunk, *args))
 
-        Bs_out = np.concatenate(chunk_Bs)
-
-        #TODO Handle Bs when DFEs weren't given and arrays are returned
-
-        return Bs_out
-
-    # Apply interference correction if Bmap was given
-    if Bmap is not None:
-        rmap = Util.adjust_recombination_map(rmap, Bmap)
-        B_windows = _get_B_per_element(Bmap, windows)
-        assert np.all(B_windows < 1)
-        U_arrs = adjust_mutation_arrays(U_arrs, windows, Bmap)
-
-    # Get grid of s and u values
-    uLs = np.sort(list(set([k[0] for k in splines.keys()])))
-    if ss is None:
-        ss = np.sort(list(set([k[1] for k in splines.keys()])))
-        # assert np.min(ss) == -1 and np.max(ss) == 0
-    assert len(uLs) == 1
-    uL = uLs[0]
-
-    # Scale deleterious mutation rates by `uL` from the table
-    U_arrs = [Us / uL for Us in U_arrs]
-
-    # Instantiate B arrays
-    Bs = [np.ones((len(ss), len(xs))) for _ in U_arrs]
-
-    # Loop over s coefficients and constraint categories
-    distances = _get_distances(xs, windows, rmap)
-    for i, s in enumerate(ss[:-1]):
-        if max_dists is not None:
-            max_dist = max_dists[i]
-            # Indices ...
-            lower_lim = np.searchsorted(
-                _get_signed_distances(xs[0], windows, rmap), -max_dist)
-            upper_lim = np.searchsorted(
-                _get_signed_distances(xs[-1], windows, rmap), max_dist)
+        # If DFEs were given, output is a vector and can be concatenated
+        if dfes is not None:
+            Bs_out = np.concatenate(chunk_Bs)
+        # Otherwise, output is a list of 2d arrays (see docstring)
         else:
-            lower_lim, upper_lim = 0, -1
+            Bs_out = [np.hstack([chunk_Bs[i][j] for i in range(len(chunk_Bs))])
+                      for j in range(len(chunk_Bs[0]))]
 
-        if Bmap is None:
-            unit_Bs = splines[(uL, s)](distances[lower_lim:upper_lim])
-        else:
-            s_windows = s * B_windows[lower_lim:upper_lim]
-            unit_Bs = _interpolate_Bs(
-                xs, s_windows, ss, distances[lower_lim:upper_lim], splines)
-
-        for j, Us in enumerate(U_arrs):
-            Bs[j][i] = np.prod(
-                unit_Bs ** Us[lower_lim:upper_lim, None], axis=0)
-
-    # Integrate across Bs
-    if dfes is not None:
-        assert len(dfes) == len(U_arrs)
-        Bs_out = np.prod([Util.integrate_with_dfe(Bs_dfe, ss, dfe)
-                          for Bs_dfe, dfe in zip(Bs, dfes)], axis=0)
-
-    # If no DFEs were given, return full Bs array
     else:
-        Bs_out = Bs
+        # Apply interference correction if Bmap was given
+        if Bmap is not None:
+            rmap = Util.adjust_recombination_map(rmap, Bmap)
+            B_windows = _get_B_per_element(Bmap, windows)
+            assert np.all(B_windows < 1)
+            U_arrs = adjust_mutation_arrays(U_arrs, windows, Bmap)
+
+        # Get grid of s and u values
+        uLs = np.sort(list(set([k[0] for k in splines.keys()])))
+        if ss is None:
+            ss = np.sort(list(set([k[1] for k in splines.keys()])))
+            # assert np.min(ss) == -1 and np.max(ss) == 0
+        assert len(uLs) == 1
+        uL = uLs[0]
+
+        # Scale deleterious mutation rates by `uL` from the table
+        U_arrs = [Us / uL for Us in U_arrs]
+
+        # Instantiate B arrays
+        Bs = [np.ones((len(ss), len(xs))) for _ in U_arrs]
+
+        # Loop over s coefficients and constraint categories
+        distances = _get_distances(xs, windows, rmap)
+        for i, s in enumerate(ss):
+            if s == 0:
+                continue
+            if max_dists is not None:
+                max_dist = max_dists[i]
+                # Indices ...
+                lower_lim = np.searchsorted(
+                    _get_signed_distances(xs[0], windows, rmap), -max_dist)
+                upper_lim = np.searchsorted(
+                    _get_signed_distances(xs[-1], windows, rmap), max_dist)
+            else:
+                lower_lim, upper_lim = 0, -1
+
+            if Bmap is None:
+                unit_Bs = splines[(uL, s)](distances[lower_lim:upper_lim])
+            else:
+                s_windows = s * B_windows[lower_lim:upper_lim]
+                unit_Bs = _interpolate_Bs(
+                    xs, s_windows, ss, distances[lower_lim:upper_lim], splines)
+
+            for j, Us in enumerate(U_arrs):
+                Bs[j][i] = np.prod(
+                    unit_Bs ** Us[lower_lim:upper_lim, None], axis=0)
+
+        # Integrate across Bs
+        if dfes is not None:
+            assert len(dfes) == len(U_arrs)
+            Bs_out = np.prod([Util.integrate_with_dfe(Bs_dfe, ss, dfe)
+                            for Bs_dfe, dfe in zip(Bs, dfes)], axis=0)
+
+        # If no DFEs were given, return full Bs array
+        else:
+            Bs_out = Bs
 
     return Bs_out
 
@@ -547,233 +556,3 @@ def _get_del_pi0_dfe(df, shape, scale, p_neu=None):
     Hls = 2 * np.array([df_sub[df_sub["s"] == s]["Hl"].iloc[0] for s in ss])
     del_pi0 = np.sum(weights * Hls)
     return del_pi0
-
-
-
-################################
-
-def parallel_Bvals(
-    xs,
-    s_vals,
-    splines,
-    dfes,
-    uL_windows,
-    uL_arrs,
-    rmap=None,
-    r=None,
-    B_map=None,
-    B_elem=None,
-    tolerance=None,
-    df=None,
-    block_size=5000,
-    cores=None,
-    verbose=True
-):
-    """
-    """
-    # If a B-map was given, prepare to perform interference correction
-    if B_map is not None:
-        if B_elem is None:
-            B_elem = _get_B_per_element(B_map, uL_windows)
-        else:
-            raise ValueError("You cannot give both `B_elem` and `B_map`")
-
-    # Build a uniform recombination map if one was not provided
-    if rmap is None:
-        L = max([xs[-1], uL_windows[-1][1]])
-        if r is None:
-            print("No recombination rates provided, assuming r=1e-8")
-            r = 1e-8
-        rmap = Util.build_uniform_rmap(r, L)
-
-    if np.isscalar(s_vals):
-        s_vals = np.array([s_vals])
-
-    # If an error tolerance is provided, find a maximum r value for each s
-    if tolerance is not None:
-        if df is None:
-            raise ValueError(
-                "You must provide a lookup table to use `tolerance`")
-        thresholds = _get_r_thresholds(df, tolerance=tolerance)
-    else:
-        thresholds = None
-
-    # Group focal sites and constrained elements into windows
-    build_blocks = lambda xs, size: [
-        np.arange(start_idx, end_idx) for start_idx, end_idx in 
-        zip(np.arange(0, len(xs), size), 
-            np.append(np.arange(size, len(xs), size), len(xs)))
-    ]
-    xblocks = build_blocks(xs, block_size)
-    ublocks = build_blocks(uL_windows, block_size)
-
-    Bs = np.ones(len(xs), dtype=np.float64)
-
-    if cores is None or cores == 1:
-        for ii, xblock in enumerate(xblocks):
-            for jj, ublock in enumerate(ublocks):
-                block_uL_arrs = [uLs[ublock] for uLs in uL_arrs]
-                if B_elem is not None:
-                    block_B_elem = B_elem[ublock]
-                else:
-                    block_B_elem = None
-                Bs[xblock] *= _predict_block_B(
-                    xs[xblock],
-                    s_vals,
-                    splines,
-                    uL_windows[ublock],
-                    block_uL_arrs,
-                    rmap,
-                    dfes,
-                    thresholds=thresholds,
-                    B_elem=block_B_elem
-                )       
-                if verbose: 
-                    num_blocks = (len(xblocks), len(ublocks))
-                    print(Util._get_time(), 
-                        f"Predicted B in block {(ii+1, jj+1)} of {num_blocks}")
-    else:
-        pairings = [(xb, ub) for xb in xblocks for ub in ublocks]
-        groups = [pairings[i:i + cores] for i in range(0, len(pairings), cores)]
-        for ii, group in enumerate(groups):
-            args = []
-            for xblock, ublock in group:
-                block_uL_arrs = [uLs[ublock] for uLs in uL_arrs]
-                if B_elem is not None:
-                    block_B_elem = B_elem[ublock]
-                else:
-                    block_B_elem = None
-                args.append((
-                    xs[xblock],
-                    s_vals,
-                    splines,
-                    uL_windows[ublock],
-                    block_uL_arrs,
-                    rmap,
-                    dfes,
-                    thresholds,
-                    block_B_elem
-                ))
-            with Pool(len(group)) as p:
-                group_Bs = p.starmap(_predict_block_B, args)
-            for (xblock, _), window_B in zip(group, group_Bs):
-                Bs[xblock] *= window_B
-            if verbose: 
-                if ii == 0:
-                    num_pairs = len(pairings)
-                    progress = len(group)
-                else:
-                    progress += len(group)
-                print(Util._get_time(), 
-                    f"Predicted B in {progress} of {num_pairs} blocks")
-    return Bs
-
-
-def _predict_block_B(    
-    xs,
-    s_vals,
-    splines,
-    uL_windows,
-    uL_arrs,
-    rmap,
-    dfes,
-    thresholds=None,
-    B_elem=None
-):
-    """
-    Take the element class and s-value-specific B predictions made by 
-    `_predict_block_B_classwise` and aggregate them together into a vector of
-    site B predictions. Integrates each class B array with weights from the 
-    class DFE, then takes the element-wise product of these.
-
-    :param xs: Vector of focal neutral sites.
-    :param s_vals: Vector of selection coefficients. This should be a subset
-        of the selection coefficients in `splines`.
-    :param splines: Dictionary of cubic splines mapping recombination
-        distances to B values. Dictionary keys have the form (u0, s).
-    :param uL_windows: An array of windows that hold constrained sites in one 
-        or more element classes.
-    :param uL_arrs: List of vectors, each holding the intensity of deleterious
-        mutation across windows for a class. These factors are windowed sums of
-        deleterious mutation rates scaled by 1/u0.
-    :param rmap: Recombination map function, mapping physical coordinates to
-        map coordinates in M.
-    :param dfes: List of dictionaries, defining parameters of the gamma DFE for
-        each class.
-    :param thresholds: Array specifying recombination distance thresholds for
-        each element of `s_vals`. If *all* focal site-constrained window 
-        distances exceed the threshold for an s value, diversity reduction 
-        exerted by mutations at that s value is treated as negligible and
-        prediction is skipped.
-    :param B_elem: Array specifying diversity reductions on each window, for 
-        use in the interference correction.
-
-    :returns: A vector of sitewise predicted B values.
-    """
-    B_arrays = _predict_block_B_classwise(
-        xs,
-        s_vals,
-        splines,
-        uL_windows,
-        uL_arrs,
-        rmap,
-        thresholds=thresholds,
-        B_elem=B_elem
-    )
-    B_vec = np.ones(len(xs))
-    for B_vals, dfe in zip(B_arrays, dfes):
-        # weights = Util._get_dfe_weights(dfe, s_vals)
-        weights = dfe
-        B_vec *= Util.integrate_with_weights(B_vals, weights[:-1])
-    return B_vec
-
-
-def _predict_block_B_classwise(
-    xs,
-    s_vals,
-    splines,
-    uL_windows,
-    uL_arrs,
-    rmap,
-    thresholds=None,
-    B_elem=None
-):
-    """
-    Make B predictions for one or more classes of constrained elements using an 
-    efficient vectorized algorithm.
-
-    Returns a list of 2d B prediction arrays. Arrays correspond to constrained
-    element classes and resemble the output of `Bvals` in shape, e.g.
-    (number of s values, number of xs). 
-
-    See `_predict_block_B` for parameter definitions.
-    :returns: A list of arrays holding predicted B values for each site and
-        selection coefficient.
-    """
-    uL0 = np.unique([k[0] for k in splines.keys()])[0]
-    r_dists = _get_r_dists(xs, uL_windows, rmap)
-    B_arrays = [np.ones((len(s_vals[:-1]), len(xs))) for uLs in uL_arrs]
-    # Initial predictions
-    if B_elem is None:
-        for ii, s_val in enumerate(s_vals[:-1]):
-            if thresholds is not None:
-                if np.all(r_dists > thresholds[ii]):
-                    continue
-            unit_Bs = splines[(uL0, s_val)](r_dists)
-            for jj, uL_arr in enumerate(uL_arrs):
-                B_arrays[jj][ii] = np.prod(unit_Bs ** uL_arr[:, None], axis=0)
-    # Predictions under the interference correction
-    else:
-        for ii, s_val in enumerate(s_vals[:-1]):
-            if thresholds is not None:
-                if np.all(r_dists > thresholds[ii]):
-                    continue
-            s_elems = s_val * B_elem
-            unit_Bs = _get_interpolated_B_vals(
-                xs, s_elems, s_vals, r_dists, splines, uL0=uL0)
-            for jj, uLs in enumerate(uL_arrs):
-                B_arrays[jj][ii] = np.prod(unit_Bs ** uLs[:, None], axis=0)
-    return B_arrays
-
-
-

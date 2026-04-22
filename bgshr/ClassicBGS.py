@@ -243,9 +243,20 @@ def _get_Hl(s, Ne, u):
         return 4 * Ne * u * np.exp(4 * Ne * s) / (np.exp(4 * Ne * s) - 1) - u / s
 
 
-def unlinked_CBGS(U, dfe, ss=None, grid_size=100):
+def unlinked_CBGS(U, dfe, ss=None, grid_size=500):
     """
-    Computes unlinked B using CBGS for one DFE.
+    Computes an unlinked B-value using Classic BGS theory, for a single DFE.
+
+    :param U: Total deleterious mutation rate of unlinked, constrained
+        elements. Assuming an average rate `u` and constrained sequence length
+        `L`, this is `u * L`.
+    :param dfe: Dictionary defining DFE type and parameters. See
+        `Util.get_dfe_weights` for specification.
+    :param ss: Optional grid of selection coefficients to integrate across.
+        If None (default), a log-spaced grid from -1 to -10^-6 with `grid_size`
+        steps is used.
+    :param grid_size: Optional number of steps in the `s` grid, to be used if
+        `ss` is None (default 500).
 
     :returns: Scalar unlinked B-value
     """
@@ -256,9 +267,8 @@ def unlinked_CBGS(U, dfe, ss=None, grid_size=100):
         assert np.all(np.diff(ss) > 0)
         assert ss[0] == -1 and ss[-1] == 0
 
-    r = 0.5
     weights = Util.get_dfe_weights(ss, dfe)
-    unlinked_Bs = reduction_CBGS(ss[:-1], U, r)
+    unlinked_Bs = unlinked_reduction_CBGS(ss[:-1], U)
     unlinked_B = Util.integrate_with_weights(unlinked_Bs, weights[:-1])
     return unlinked_B
 
