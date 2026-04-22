@@ -479,15 +479,13 @@ def adjust_mutation_arrays(U_arrs, windows, Bmap):
 # Computing pi0
 
 
-def expected_pi0(
+def get_expected_pi0(
     df,
     avg_u,
     num_sites,
-    u_arrs=[],
-    num_sites_dfes=[],
-    shapes=[],
-    scales=[],
-    p_neus=[]
+    u_arrs=None,
+    num_sites_dfes=None,
+    dfes=None
 ):
     """
     Compute expected pi0 using windowed mutation rate data for several DFEs.
@@ -498,11 +496,7 @@ def expected_pi0(
     :param u_arrs: List of arrays with average mutation rates for each DFE class
     :param num_sites_dfes: List of accessible site counts for each DFE class
     """
-    if len(p_neus) == 0:
-        p_neus = [0] * len(shapes)
-
-    assert len(shapes) == len(scales) == len(p_neus)
-    assert len(shapes) == len(num_sites_dfes) == len(u_arrs)
+    assert len(dfes) == len(num_sites_dfes) == len(u_arrs)
 
     # Check lookup table properties
     assert len(set(df["uL"])) == 1
@@ -518,6 +512,7 @@ def expected_pi0(
         neu_U = (avg_u * num_sites) - del_U
         neu_u = np.zeros(len(neu_U))
         neu_u[neu_sites > 0] = neu_U[neu_sites > 0] / neu_sites[neu_sites > 0]
+        assert np.all(neu_u >= 0)
     else:
         neu_u = avg_u
     pi0_df = np.unique(df["pi0"])[0]
@@ -526,8 +521,8 @@ def expected_pi0(
     # Deleterious diversity
     if len(u_arrs) > 0:
         sum_del_pi0 = 0.0
-        for i, (u_arr, dfe_sites) in enumerate(zip(u_arrs, num_sites_dfes)):
-            pi_dfe = _get_del_pi0_dfe(df, shapes[i], scales[i], p_neu=p_neus[i])
+        for u_arr, dfe_sites, dfe in zip(u_arrs, num_sites_dfes, dfes):
+            pi_dfe = _get_del_pi0_dfe(df, dfe)
             sum_del_pi0 += pi_dfe * u_arr / uL * dfe_sites
         # Average across deleterious diversity
         del_pi0 = np.zeros(len(sum_del_pi0))
@@ -544,7 +539,7 @@ def expected_pi0(
     return pi0, neu_pi0, del_pi0
 
 
-def _get_del_pi0_dfe(df, shape, scale, p_neu=None):
+def _get_del_pi0_dfe(df, dfe):
     """
     Integrate `Hl` (deleterious pi0) from a lookup table `df` across a gamma
     or gamma-neutral DFE.
@@ -552,7 +547,7 @@ def _get_del_pi0_dfe(df, shape, scale, p_neu=None):
     df_sub = df[df["r"] == 0]
     ss = np.sort(df_sub["s"])
     assert ss[0] == -1 and ss[-1] == 0
-    weights = Util.weights_gamma_dfe(ss, shape, scale, p_neu=p_neu)
+    weights = Util.get_dfe_weights(ss, dfe)
     Hls = 2 * np.array([df_sub[df_sub["s"] == s]["Hl"].iloc[0] for s in ss])
     del_pi0 = np.sum(weights * Hls)
     return del_pi0

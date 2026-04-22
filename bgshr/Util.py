@@ -680,6 +680,48 @@ def weights_gamma_neutral_dfe(ss, shape, scale, p_neu):
     return weights
 
 
+# Scaling and manipulating tables
+
+
+def scale_up_table(df, scale):
+    # increase the scale of a table by a simple averaging across windows.
+    # inserts nan in windows with no data
+    if "chrom" in df.columns:
+        chrom = next(iter(df["chrom"]))
+    elif "#chrom" in df.columns:
+        chrom = next(iter(df["#chrom"]))
+    else:
+        chrom = "none"
+    starts = np.array(df["chromStart"])
+    ends = np.array(df["chromEnd"])
+    # all windows from old data
+    old_scale = np.min(np.diff(starts))
+    full_starts = np.arange(0, starts[-1] + 1, old_scale)
+    start_idx = np.searchsorted(full_starts, starts)
+    L = ends[-1]
+    new_L = scale * int(np.ceil(L / scale))
+    new_starts = np.arange(0, new_L, scale)
+    new_ends = np.arange(scale, new_L + scale, scale)
+    data = {"chrom": [chrom] * len(new_starts),
+            "chromStart": new_starts,
+            "chromEnd": new_ends}
+    for col in df.columns[3:]:
+        old_map = np.array(df[col])
+        full_old_map = np.full(len(full_starts), np.nan)
+        full_old_map[start_idx] = old_map
+        spacer = np.full(int(new_L / old_scale - len(full_old_map)) , np.nan)
+        full_old_map = np.concatenate((full_old_map, spacer))
+        map_arr = np.reshape(full_old_map,
+            shape=(len(new_starts), len(full_old_map) // len(new_starts)))
+        if col == "num_sites":
+            new_map = np.nansum(map_arr, axis=1).astype(np.int64)
+        else:
+            new_map = np.nanmean(map_arr, axis=1)
+        data[col] = new_map
+    new_df = pandas.DataFrame(data)
+    return new_df
+
+
 # Assorted utilities
 
 
