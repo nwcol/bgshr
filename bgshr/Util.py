@@ -619,38 +619,64 @@ def get_dfe_weights(ss, dfe):
     if dfe["type"] == "gamma":
         weights = weights_gamma_dfe(ss, dfe["shape"], dfe["scale"])
     elif dfe["type"] == "gamma_neutral":
-        weights = weights_gamma_dfe(
-            ss, dfe["shape"], dfe["scale"], p_neu=dfe["p_neu"])
+        weights = weights_gamma_neutral_dfe(
+            ss, dfe["shape"], dfe["scale"], dfe["p_neu"])
     else:
         raise ValueError(f"DFE type {df['type']} is unknown")
     return weights
 
 
-def weights_gamma_dfe(ss, shape, scale, p_neu=0):
+def weights_gamma_dfe(ss, shape, scale):
     """
-    Computes discretized weights for a gamma or gamma-neutral distribution.
+    Computes discretized weights for selection coefficient grid `ss` using a
+    gamma distribution.
 
-    :param ss: Selection coefficients
+    Zero weight is placed on the bin s = 0.
+
+    :param ss: Selection coefficients (all ss <= 0)
     :param shape: Shape parameter
     :param scale: Scale parameter
     :param p_neu: Neutral fraction parameter
 
-    :returns: Array of weights with length `len(ss)`
+    :returns: Array of DFE weights with length `len(ss)`
     """
     # Make sure ss are sorted negative values
     assert np.all(ss <= 0)
     ss_sorted = np.sort(ss)
     if np.any(ss != ss_sorted):
         raise ValueError("selection values are not sorted")
+    assert ss[-1] == [0]
     midpoints = (ss[1:] + ss[:-1]) / 2
-    grid = np.concatenate([[-np.inf], midpoints, [0]])
-    cdf_evals = stats.gamma.cdf(-grid, shape, scale=scale)
-    weights = -np.diff(cdf_evals)
+    weights = np.zeros(len(ss))
+    cdf = lambda x: stats.gamma.cdf(-x, shape, scale=scale)
+    for i in range(len(ss)):
+        if i == 0 :
+            weights[i] = 1 - cdf(midpoints[0])
+        elif i == len(ss) - 1:
+            weights[i] = 0
+        elif i == len(ss) - 2:
+            weights[i] = cdf(midpoints[-1])
+        else:
+            weights[i] = cdf(midpoints[i]) - cdf(midpoints[i + 1])
+    return weights
 
-    # Place a neutral mass of `p_neu` at s = 0
-    if p_neu > 0:
-        weights *= (1 - p_neu)
-        weights[-1] += (1 - np.sum(weights))
+
+def weights_gamma_neutral_dfe(ss, shape, scale, p_neu):
+    """
+    Computes discretized weights for selection coefficient grid `ss` using a
+    gamma neutral distribution. Exactly `p_neu` mass is placed on the bin
+    where s = 0.
+
+    :param ss: Selection coefficients (all ss <= 0)
+    :param shape: Shape parameter
+    :param scale: Scale parameter
+    :param p_neu: Neutral fraction parameter
+
+    :returns: Array of DFE weights with length `len(ss)`
+    """
+    weights = weights_gamma_dfe(ss, shape, scale)
+    weights *= (1 - p_neu)
+    weights[-1] = p_neu
     return weights
 
 
