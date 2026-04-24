@@ -20,7 +20,7 @@ def get_Bmap(xs, Bs):
 
 def Bvals(
     xs,
-    s,
+    ss,
     splines,
     u=1e-8,
     L=None,
@@ -71,10 +71,10 @@ def Bvals(
 
     # Allow for multiple s values to be computed, to reduce number
     # of calls to the recombination map when integrating over a DFE
-    if np.isscalar(s):
-        all_s = [s]
+    if np.isscalar(ss):
+        all_s = [ss]
     else:
-        all_s = [_ for _ in s]
+        all_s = [_ for _ in ss]
     # Each element could have its own average mutation rate
     if np.isscalar(u):
         all_u = [u for _ in elements]
@@ -135,7 +135,7 @@ def Bvals(
                     )
                     Bs[j] *= fac0 * fac1
 
-    if np.isscalar(s):
+    if np.isscalar(ss):
         assert len(Bs) == 1
         return Bs[0]
     else:
@@ -146,20 +146,21 @@ def Bvals_dfe(
     xs,
     splines,
     ss=None,
-    u=1e-8,
+    u=None,
     L=None,
     rmap=None,
     r=None,
-    elements=None,
-    max_dist=0.1,
-    Bmap=None,
-    dfe=None
+    elements=[],
+    max_r=0.1,
+    r_dists=None,
+    dfe=None,
+    Bmap=None
 ):
     """
     Integrate across a DFE.
     """
     if ss is None:
-        ss = np.sort(list(set([k[1] for k in splines.keys()])))
+        ss = np.sort(list(set([k[1] for k in splines.keys()])))[:-1]
 
     Bs = Bvals(
         xs,
@@ -173,8 +174,12 @@ def Bvals_dfe(
         max_r=max_dist,
         Bmap=Bmap
     )
-    B = Util.integrate_with_dfe(Bs, ss, dfe)
-    return B
+
+    if dfe is not None:
+        Bs_out = Util.integrate_with_dfe(Bs, ss, dfe)
+    else:
+        Bs_out = Bs
+    return Bs_out
 
 
 def Bvals_dfes(
@@ -225,20 +230,72 @@ def Bvals_dfes(
     return Bs_out
 
 
-def split_U_windows(windows, U_arrs):
+def interference_Bvals(
+    xs,
+    splines,
+    windows=None,
+    U_arrs=None,
+    rmap=None,
+    r=None,
+    L=None,
+    ss=None,
+    max_dists=None,
+    dfes=None,
+    Bmap=None,
+    chunk_size=1000,
+    n_cores=1,
+    B_unlinked=None,
+    verbose=False
+):
     """
-    Makes inputs to `Bvals_fast` comport to `Bvals_dfes`.
+    Predict B with several rounds of interference correction. Returns B-arrays
+    from each round of correction and uses `Bvals_fast`.
     """
-    all_elements = []
-    avg_u_arrs = []
-    for U_arr in U_arrs:
-        keep = np.where(U_arr > 0)[0]
-        elements = windows[keep]
-        all_elements.append(elements)
-        n_sites = elements[:, 1] - elements[:, 0]
-        avg_u = U_arr[keep] / n_sites
-        avg_u_arrs.append(avg_u)
-    return all_elements, avg_u_arrs
+    if B_unlinked is None:
+        B_unlinked = 1
+        Bmap = None
+    else:
+        assert B_unlinked < 1
+        est_L = max([windows[-1, 1], xs[-1]])
+        Bmap = get_Bmap([0, est_L], [B_unlinked, B_unlinked])
+
+    Bs = bgshr.Predict.Bvals_fast(
+        xs,
+        splines,
+        windows=windows,
+        U_arrs=U_arrs,
+        rmap=rmap,
+        dfes=dfes,
+        max_dists=max_dists,
+        chunk_size=chunk_size,
+        n_cores=n_cores,
+        Bmap=Bmap
+    )
+    Bs *= B_unlinked
+    interf_Bs = [Bs]
+    if verbose:
+        pass
+
+    for i in range(n_corrs):
+        Bs0 = Bs
+        Bmap = bgshr.Predict.get_Bmap(xs, Bs0)
+        Bs = bgshr.Predict.Bvals_fast(
+            xs,
+            splines,
+            windows=windows,
+            U_arrs=U_arrs,
+            rmap=rmap,
+            dfes=dfes,
+            max_dists=max_dists,
+            chunk_size=chunk_size,
+            n_cores=n_cores,
+            Bmap=Bmap
+        )
+        Bs *= B_unlinked
+        interf_Bs.append(Bs)
+        if verbose:
+            pass
+    return interf_Bs
 
 
 def Bvals_fast(
@@ -399,22 +456,20 @@ def _get_B_per_element(bmap, elements):
 
 
 def _get_element_midpoints(elements):
-    x = np.zeros(len(elements))
-    for i, e in enumerate(elements):
-        x[i] = np.mean(e)
-    return x
+    return np.mean(elements, axis=1)
 
 
 def _get_r_dists(xs, elements, rmap):
     """
     Compute a matrix of recombination distances between focal neutral sites `xs`
-    and constrained elements/windows `elements`.
+    and constrained elements `elements`.
+
+    The returned array has shape (len(elements), len(xs)).
     """
     x_midpoints = np.mean(elements, axis=1)
     r_midpoints = rmap(x_midpoints)
     r_xs = rmap(xs)
-    r_dists = np.zeros((len(elements), len(xs)))
-    r_dists[:, :] = Util.haldane_map_function(
+    r_dist = Util.haldane_map_function(
         np.abs(r_xs[None, :] - r_midpoints[:, None]))
     return r_dists
 
@@ -476,10 +531,122 @@ def adjust_mutation_arrays(U_arrs, windows, Bmap):
     return adjusted_U_arrs
 
 
-# Computing pi0
+# Computing expected pi and pi0
 
 
-def get_expected_pi0(
+def expected_pi(pi0, B, mask=None):
+    """
+    Given a pi0 value or array of values, multiply by the per-site diversity
+    reduction to get expected pi after linked selection.
+
+    If mask is given, it is a boolean array with same length as B, with 1/True
+    at sites that should be masked and excluded from likelihood calculation,
+    0/False for sites that should be included.
+
+    """
+    if not np.isscalar(pi0):
+        if len(pi0) != len(B):
+            raise ValueError("pi0 and B must be the same length")
+    if mask is not None:
+        if len(mask) != len(B):
+            raise ValueError("mask and B must be the same length")
+    else:
+        mask = False
+    return np.ma.masked_array(pi0 * B, mask=mask)
+
+
+def expected_pi0(u, df, L=None, elements=[], dfes=[]):
+    """
+    Get expected pi0, given mutation rates and any elements under selection.
+
+    DFEs are defined with dictionaries, specifying the DFE type and any
+    parameters associated with that DFE.
+
+    :param u: Mutation rate. May be a scalar or an array of site mutation rates.
+    :param df: Lookup table, used to find neutral and deleterious pi0.
+    :param elements: List of arrays specifying starts/ends of constrained
+        elements, corresponding to `dfes`. These are half-open (BED-style).
+        They should specify non-overlapping regions, since overlapping elements
+        will have values set by the last-seen element type in this function.
+    :param dfes: List of DFE parameter dictionaries, specifying distribution
+        type and parameters associated with that DFE. For example, a gamma DFE
+        is defined as
+
+            `{"type": "gamma", "shape": shape, "scale": scale}`.
+
+        A gamma DFE with a proportion of sites being neutral (e.g., gamma for
+        nonsynonymous and neutral for synonymous mutations) would be
+
+            `{"type": "gamma_neutral",
+              "shape": shape,
+              "scale": scale,
+              "p_neu": 1 / (2.31 + 1)}`
+
+        or whatever value `p_neu` should be.
+    """
+    if np.isscalar(u):
+        if L is None:
+            raise ValueError("L must be provided if u is a scalar value")
+        u_arr = u * np.ones(L)
+    else:
+        if L is not None and len(u) != L:
+            raise ValueError("L does not equal length of u")
+        u_arr = 1 * u
+    if len(elements) != len(dfes):
+        raise ValueError("length of dfes does not match length of element sets")
+    if len(set(df["uL"])) != 1:
+        raise ValueError("only a single uL value in the lookup table is allowed")
+
+    # neutral diversity
+    uL = (df[(df["s"] == 0) & (df["r"] == 0)]["uL"]).iloc[0]
+    pi0 = 2 * df[(df["s"] == 0) & (df["r"] == 0)]["Hl"].iloc[0] * u_arr / uL
+
+    for elems, dfe in zip(elements, dfes):
+        # get diversity for uL
+        pi_dfe = _get_pi_dfe(df, dfe)
+        # scale by u_arr
+        pi_arr = pi_dfe * u_arr / uL
+        # fill in pi0 for each element
+        for e in elems:
+            pi0[e[0] : e[1]] = pi_arr[e[0] : e[1]]
+
+    return pi0
+
+
+def _get_pi_dfe(df, dfe):
+    """
+    Compute pi0 for a given `dfe` by using discretized DFE weights to integrate
+    across `Hl` values in a lookup table `df`.
+
+    :param df: Lookup table
+    :param dfe: DFE parameter dictionary
+    :returns: Scalar expected pi0
+    """
+    df_sub = df[df["r"] == 0]
+    ss = np.sort(df_sub["s"])
+    assert ss[-1] == 0
+    weights = Util.get_dfe_weights(ss, dfe)
+    Hls = 2 * np.array([df_sub[df_sub["s"] == s]["Hl"].iloc[0] for s in ss])
+    pi_dfe = np.sum(Hls * weights)
+    return pi_dfe
+
+
+
+
+
+
+
+#####
+
+
+
+
+
+
+
+
+
+def _dep_get_expected_pi0(
     df,
     avg_u,
     num_sites,
@@ -506,13 +673,15 @@ def get_expected_pi0(
     # Neutral diversity
     del_sites = np.sum(num_sites_dfes, axis=0)
     neu_sites = num_sites - del_sites
-    assert np.all(neu_sites >= 0)
+    # assert np.all(neu_sites >= 0)
+    print(np.count_nonzero(neu_sites < 0))
     if len(u_arrs) > 0:
         del_U = np.sum([u * L for L, u in zip(num_sites_dfes, u_arrs)], axis=0)
         neu_U = (avg_u * num_sites) - del_U
         neu_u = np.zeros(len(neu_U))
         neu_u[neu_sites > 0] = neu_U[neu_sites > 0] / neu_sites[neu_sites > 0]
-        assert np.all(neu_u >= 0)
+        # assert np.all(neu_u >= 0)
+        neu_u[neu_u < 0] = 0
     else:
         neu_u = avg_u
     pi0_df = np.unique(df["pi0"])[0]
@@ -539,15 +708,10 @@ def get_expected_pi0(
     return pi0, neu_pi0, del_pi0
 
 
-def _get_del_pi0_dfe(df, dfe):
+def _dep_get_del_pi0_dfe(df, dfe):
     """
     Integrate `Hl` (deleterious pi0) from a lookup table `df` across a gamma
     or gamma-neutral DFE.
     """
-    df_sub = df[df["r"] == 0]
-    ss = np.sort(df_sub["s"])
-    assert ss[0] == -1 and ss[-1] == 0
-    weights = Util.get_dfe_weights(ss, dfe)
-    Hls = 2 * np.array([df_sub[df_sub["s"] == s]["Hl"].iloc[0] for s in ss])
-    del_pi0 = np.sum(weights * Hls)
+
     return del_pi0

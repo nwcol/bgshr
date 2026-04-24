@@ -71,7 +71,7 @@ def unlinked_reduction_CBGS(s, u, L=1):
     :param L: Optional scaling factor for the mutation rate. Assumes a non-
         recombining locus of length `L` and average per-base mutation rate `u`.
     """
-    return np.exp(-8 * -s * u * L / (1 + -s) ** 2)
+    return np.exp(8 * s * u * L / (1 - s) ** 2)
 
 
 def approx_reduction_CBGS(s, u, r, L=1):

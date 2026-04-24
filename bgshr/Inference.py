@@ -5,7 +5,89 @@ import warnings
 import gzip
 import re
 
-from . import Util
+from . import Util, Predict
+
+
+_data_cache = {}
+_ll_cache = {}
+
+
+def objective_func(
+    params,
+    xs,
+    df,
+    ndns,
+    mask,
+    u_map,
+    elements,
+    U_windows,
+    U_arrs,
+    r_map,
+    dfes,
+    n_corrs,
+    chunk_size,
+    n_cores,
+    B_unlinked
+):
+    """
+    Objective function for Ne optimization.
+    """
+    Ne = params[0]
+
+    if Ne in _ll_cache:
+        return -_ll_cache[Ne]
+
+    # Check geometry
+    L = len(u_map)
+    nd, ns = ndns
+    assert len(nd) == L
+
+    # Send lookup table to target Ne
+    df = rebuild_lookup_table(df, Ne)
+    _, __, splines = Util.generate_linear_splines(df)
+    max_dists = Util.get_max_distances(df)
+
+    # Predict B-values
+    interf_Bs = Predict.interference_Bvals(
+        xs,
+        splines,
+        windows=windows,
+        U_arrs=U_arrs,
+        rmap=rmap,
+        max_dists=max_dists,
+        dfes=dfes,
+        chunk_size=chunk_size,
+        n_cores=n_cores,
+        B_unlinked=B_unlinked,
+        verbose=verbose
+    )
+
+    # Get expected pi
+    Bmap = Predict.get_Bmap(xs, Bs)
+    site_B = Bmap(np.arange(L))
+    exp_pi0 = expected_pi0(u_map, df, elements=elements, dfes=dfes)
+    exp_pi = expected_pi(exp_pi0, site_B, mask=mask)
+
+    # Compute likelihood and update caches
+    ll = bgshr.Inference.ll(nd, ns, exp_pi)
+    _cache[Ne] = ll
+    _data_cache[Ne] = (interf_Bs, exp_pi)
+    if verbose:
+        pass
+    return -ll
+
+
+def rebuild_lookup_table(df, Ne):
+    """
+    Copies a lookup table and scales it to the appropriate Ne.
+    """
+    df = Util.cap_max_lookup_table_B(df)
+    df = Util.scale_lookup_table(df, Ne)
+    df = Util.fill_in_lookup_table(df)
+    ss_extend = -np.logspace(0, np.log10(-np.min(df["s"])), 17)[:-1]
+    df = ClassicBGS.extend_lookup_table(df, ss_extend)
+    df = Util.convert_lookup_table_to_morgans(df)
+    return df
 
 
 def num_diff_same(counts):
@@ -76,103 +158,6 @@ def ll(nD, nS, Epi):
     """
     ll_arr = ll_per_site(nD, nS, Epi)
     return ll_arr.sum()
-
-
-def expected_pi(pi0, B, mask=None):
-    """
-    Given a pi0 value or array of values, multiply by the per-site diversity
-    reduction to get expected pi after linked selection.
-
-    If mask is given, it is a boolean array with same length as B, with 1/True
-    at sites that should be masked and excluded from likelihood calculation,
-    0/False for sites that should be included.
-    """
-    if not np.isscalar(pi0):
-        if len(pi0) != len(B):
-            raise ValueError("pi0 and B must be the same length")
-    if mask is not None:
-        if len(mask) != len(B):
-            raise ValueError("mask and B must be the same length")
-    else:
-        mask = False
-    return np.ma.masked_array(pi0 * B, mask=mask)
-
-
-def expected_pi0(u, df, L=None, elements=[], dfes=[]):
-    """
-    Get expected pi0, given mutation rate and any elements under selection. The
-    mutation rate can be a single scalar value valid across the entire region,
-    or an array of per-base pair mutation rates. The elements are lists of
-    intervals (a list of lists, with half open intervals [left, right) defined
-    within). The dfes correspond to those elements.
-
-    The DFEs are defined as a dictionary, specifying the DFE type and any
-    parameters associated with that DFE. For example, a gamma DFE is defined as
-    `{"type": "gamma", "shape": shape, "scale": scale}`. A gamma DFE with a
-    proportion of sites being neutral (e.g., gamma for nonsynonymous and
-    neutral for synonymous mutations) would be `{"type": "gamma_neu", "shape":
-    shape, "scale": scale, "p_neu": 1 / (2.31 + 1)}`, or whatever value `p_neu`
-    should be.
-
-    Elements should not overlap, since overlapping elements will have values
-    set by the last-seen element in this function.
-    """
-    if np.isscalar(u):
-        if L is None:
-            raise ValueError("L must be provided if u is a scalar value")
-        u_arr = u * np.ones(L)
-    else:
-        if L is not None and len(u) != L:
-            raise ValueError("L does not equal length of u")
-        u_arr = 1 * u
-    if len(elements) != len(dfes):
-        raise ValueError("length of dfes does not match length of element sets")
-    if len(set(df["uL"])) != 1:
-        raise ValueError("only a single uL value in the lookup table is allowed")
-
-    # neutral diversity
-    uL = (df[(df["s"] == 0) & (df["r"] == 0)]["uL"]).iloc[0]
-    pi0 = 2 * df[(df["s"] == 0) & (df["r"] == 0)]["Hl"].iloc[0] * u_arr / uL
-
-    for elems, dfe in zip(elements, dfes):
-        # get diversity for uL
-        pi_dfe = _get_pi_dfe(df, dfe)
-        # scale by u_arr
-        pi_arr = pi_dfe * u_arr / uL
-        # fill in pi0 for each element
-        for e in elems:
-            pi0[e[0] : e[1]] = pi_arr[e[0] : e[1]]
-
-    return pi0
-
-
-def _get_pi_dfe(df, dfe):
-    df_sub = df[df["r"] == 0]
-    ss = np.sort(df_sub["s"])
-    assert ss[-1] == 0
-    weights = Util.get_dfe_weights(ss, dfe)
-    Hls = 2 * np.array([df_sub[df_sub["s"] == s]["Hl"].iloc[0] for s in ss])
-    return np.sum(Hls * weights)
-
-
-def _get_gamma_weights(ss, shape, scale):
-    weights = np.concatenate(
-        (
-            Util.weights_gamma_dfe(ss[:-1], shape, scale),
-            [stats.gamma.cdf(-ss[-2], shape, scale=scale)],
-        )
-    )
-    return weights
-
-
-def _get_gamma_neutral_weights(ss, shape, scale, p_neu):
-    weights = np.concatenate(
-        (
-            (1 - p_neu) * Util.weights_gamma_dfe(ss[:-1], shape, scale),
-            [p_neu + (1 - p_neu) * stats.gamma.cdf(-ss[-2], shape, scale=scale)],
-        )
-    )
-    return weights
 
 
 def load_mask(mask_fname, L=None):

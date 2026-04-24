@@ -411,19 +411,76 @@ def inverse_haldane_map_function(rs):
 # Mutation maps, rates
 
 
-def compute_windowed_mutation_rate(elements, windows, u_map, fill="mean"):
+def compute_window_averages(windows, site_map):
+    """
+    Computes windowed averages of some site-resolution quantity `site_map`. It
+    is expected that `site_map` is a masked array (np.ma.array).
+
+    Also returns the number of non-masked entries in each interval.
+
+    :param windows: Array of BED-style genomic intervals.
+    :param site_map: Site-resolution map to average within `windows`.
+
+    :returns: Array of window averages.
+    """
+    num_sites = np.zeros(len(windows), dtype=np.int64)
+    avgs = np.zeros(len(windows), fill_val, dtype=np.float64)
+    for ii, (start, end) in enumerate(windows):
+        if np.all(site_map[start:end].mask):
+            continue
+        else:
+            num_sites[ii] = np.sum(np.logical_not(site_map[start:end].mask))
+            avgs[ii] = np.mean(site_map[start:end])
+    return num_sites, avgs
+
+
+def build_site_map(intervals, values, L=None):
+    """
+    Constructs a site-resolution map from a set of window starts/ends
+    `intervals` and an array of window `values`.
+
+    :param intervals: Array of BED-style genomic intervals.
+    :param values: Array of values applying to each interval
+    :param L: Optional chromosome length. If None (default), the highest
+        position in `intervals` is used.
+    :returns: Array holding a site-resolution map of length `L`.
+    """
+    assert len(intervals) == len(values)
+    if L is None:
+        L = int(intervals[-1, 1])
+    site_map = np.zeros(L, dtype=np.float64)
+    for ii, (start, end) in enumerate(intervals):
+        if start >= L:
+            break
+        if end > L:
+            end = L
+        site_map[start:end] = values[ii]
+    return site_map
+
+
+def compute_window_mutation_rates(elements, windows, u, fill_val="mean"):
     """
     Computes sums of the deleterious mutation rate in an array of elements,
     divided into `windows`.
+
+    :param elements:
+    :param windows:
+    :param u: Scalar mutation rate or array of site mutation rates.
+    :param fill_val:
     """
+    if np.isscalar(u):
+        L = windows[-1, 1]
+        u_arr = u * np.ones(L)
+    else:
+        L = len(u_map)
+        # Windows shouldn't extend beyond the end of the chromosome
+        assert windows[-1, 1] <= L
+        u_arr = 1 * u
+
     if fill == "mean":
         fill = np.nanmean(u_map)
     else:
         assert isinstance(fill, float)
-
-    L = len(u_map)
-    # Windows shouldn't extend beyond the end of the chromosome
-    assert windows[-1, 1] <= L
 
     element_map = ~regions_to_mask(elements, L=L)
     window_sites = np.zeros(len(windows), np.int64)
@@ -516,7 +573,7 @@ def load_mutation_arrays(
 
 def load_elements(bed_file, L=None):
     """
-    From a bed file, load elements. If L is not None, we exlude regions
+    From a bed file, load elements. If L is not None, we exclude regions
     greater than L, and any region that overlaps with L is truncated at L.
     """
     elem_left = []
@@ -560,19 +617,15 @@ def get_elements(df, L=None):
 
 
 def collapse_elements(elements):
-    elements_comb = []
-    for e in elements:
-        if len(elements_comb) == 0:
-            elements_comb.append(e)
-        elif e[0] <= elements_comb[-1][1]:
-            assert e[0] >= elements_comb[-1][0]
-            elements_comb[-1][1] = e[1]
-        else:
-            elements_comb.append(e)
-    return np.array(elements_comb)
+    """
+    Collapses any overlapping `elements`.
+    """
+    return mask_to_elements(elements_to_mask(elements))
 
 
 def break_up_elements(elements, max_size=500):
+    """
+    """
     elements_br = []
     for l, r in elements:
         if r - l > max_size:
@@ -583,6 +636,113 @@ def break_up_elements(elements, max_size=500):
         else:
             elements_br.append([l, r])
     return np.array(elements_br)
+
+
+def resolve_elements(elements, L=None, verbose=False):
+    """
+    Removes redundant sites that appear in more than one array of `elements`.
+
+    The order of `elements` determines priority; the zeroth array is unchanged,
+    while the last element loses any sites which appeared in prior elements.
+    """
+    if not L:
+        L = max([elems[-1, 1] for elems in elements])
+    covered_sites = np.zeros(L)
+    resolved_elements = []
+    for i, elems in enumerate(elements):
+        mask = elements_to_mask(elems, L=L)
+        redundant_sites = np.where((mask == 0) & (covered_sites == 1))[0]
+        # Remove redundant sites
+        mask[redundant_sites] = True
+        resolved_elems = mask_to_elements(mask)
+        for l, r in resolved_elems:
+            covered_sites[l:r] = True
+        resolved_elements.append(resolved_elems)
+        if verbose and i > 0:
+            print(f"removed {len(redundant_sites)} "
+                  f"redundant sites from element class {i}")
+    return resolved_elements
+
+
+def elements_to_mask(elements, L=None):
+    """
+    Returns an array which equals False within `elements` and True elsewhere.
+    """
+    if L is None:
+        L = elements[-1, 1]
+    mask = np.ones(L, dtype=bool)
+    for (start, end) in elements:
+        if start > L:
+            break
+        if end > L:
+            end = L
+        mask[start:end] = 0
+    return mask
+
+
+def mask_to_elements(mask):
+    """
+    Returns an array of starts and ends corresponding to regions where `mask`
+    is False.
+    """
+    jumps = np.diff(np.concatenate(([1], mask, [1])))
+    starts = np.where(jumps == -1)[0]
+    ends = np.where(jumps == 1)[0]
+    elements = np.stack([starts, ends], axis=1)
+    return elements
+
+
+def intersect_regions(regions_arrs, L=None):
+    """
+    Form an array of regions from the intersection of sites in input regions
+    arrays.
+
+    :param regions_arrs: List of regions arrays.
+    :param L: Maximum position to include (default None).
+
+    :returns: Array of regions composed of shared sites.
+    """
+    if L is None:
+        L = max([regions[-1, 1] for regions in regions_arrs])
+    coverage = np.zeros(L, dtype=np.uint8)
+    for elements in regions_arrs:
+        for (start, end) in elements:
+            coverage[start:end] += 1
+    boolmask = coverage < len(regions_arrs)
+    isec = mask_to_regions(boolmask)
+    return isec
+
+
+def add_regions(regions_arrs, L=None):
+    """
+    Form an array of regions from the union of covered sites in several input
+    regions arrays.
+    """
+    if L is None:
+        L = max([regions[-1, 1] for regions in regions_arrs])
+    coverage = np.zeros(L, dtype=np.uint8)
+    for elements in regions_arrs:
+        for (start, end) in elements:
+            coverage[start:end] += 1
+    boolmask = coverage < 1
+    union = mask_to_regions(boolmask)
+    return union
+
+
+def subtract_regions(elements0, elements1, L=None):
+    """
+    Get an array of regions representing sites that belong to regions in
+    `elements0` and not `elements1`
+    """
+    if L is None:
+        L = max((elements0[-1, 1], elements1[-1, 1]))
+    boolmask = np.ones(L, dtype=bool)
+    for (start, end) in elements0:
+        boolmask[start:end] = False
+    for (start, end) in elements1:
+        boolmask[start:end] = True
+    ret = mask_to_regions(boolmask)
+    return ret
 
 
 # DFE discretization and weighting
@@ -650,10 +810,13 @@ def weights_gamma_dfe(ss, shape, scale):
     weights = np.zeros(len(ss))
     cdf = lambda x: stats.gamma.cdf(-x, shape, scale=scale)
     for i in range(len(ss)):
+        # The bin about s = -1 extends to -infinity
         if i == 0 :
             weights[i] = 1 - cdf(midpoints[0])
+        # The s = 0 bin receives 0 mass
         elif i == len(ss) - 1:
             weights[i] = 0
+        # The smallest |s| bin above s = 0 receives all density down to s = 0
         elif i == len(ss) - 2:
             weights[i] = cdf(midpoints[-1])
         else:
@@ -683,7 +846,7 @@ def weights_gamma_neutral_dfe(ss, shape, scale, p_neu):
 # Scaling and manipulating tables
 
 
-def scale_up_table(df, scale):
+def scale_genome_table(df, scale):
     # increase the scale of a table by a simple averaging across windows.
     # inserts nan in windows with no data
     if "chrom" in df.columns:
@@ -774,206 +937,12 @@ def convert_bedgraph_mutation_map(
     return
 
 
-def compute_scale(site_map, elements, intervals):
-    """
-    Compute deleterious mutation rate scales (ratios of the deleterious rate to 
-    the total average rate) in windows defined by `intervals`.
-
-    :param array site_map: Site-resolution mutation map/ should represent
-        missing data as np.nan.
-    :param array elements: Array of starts/ends of constrained elements
-    :param array intervals: Windows in which to compute scales.
-    """ 
-    element_indicator = ~regions_to_mask(elements, L=len(site_map))
-    del_sites = np.zeros(len(intervals), np.int64)
-    scale = np.zeros(len(intervals), np.float64)
-    for ii, (start, end) in enumerate(intervals):
-        segment_indicator = element_indicator[start:end]
-        del_sites[ii] = np.sum(segment_indicator)
-        if del_sites[ii] == 0:
-            scale[ii] = np.nan
-            continue
-        segment_nans = np.isnan(site_map[start:end])
-        num_nans = np.count_nonzero(segment_nans)
-        if num_nans == end - start:
-            scale[ii] = 1
-        else:
-            segment = np.copy(site_map[start:end])
-            # The total mean is computed without imputation.
-            segment_mean = np.nanmean(segment) 
-            segment[segment_nans] = segment_mean
-            scale[ii] = np.mean(segment[segment_indicator]) / segment_mean
-    return del_sites, scale
-
-
-def compute_masked_scale(site_map, elements, intervals, mask_regions):
-    """
-    Compute mutation rate scales following the application of a genetic mask.
-    It is assumed that the mask excludes all sites with missing mutation rate
-    data.
-
-    :param array site_map: Site-resolution mutation map/ should represent
-        missing data as np.nan.
-    :param array elements: Array of starts/ends of constrained elements
-    :param array intervals: Windows in which to compute scales.
-    :param array mask_regions: Array of mask intervals
-    """
-    mask = regions_to_mask(mask_regions, L=len(site_map))
-    element_indicator = ~regions_to_mask(elements, L=len(site_map))
-    del_sites = np.zeros(len(intervals), np.int64)
-    scale = np.zeros(len(intervals), np.float64)
-    for ii, (start, end) in enumerate(intervals):
-        segment_indicator = element_indicator[start:end]
-        masked_indicator = np.logical_and(segment_indicator, ~mask[start:end])
-        del_sites[ii] = np.sum(masked_indicator)
-        if del_sites[ii] == 0:
-            scale[ii] = np.nan
-            continue
-        else:
-            segment = site_map[start:end]
-            segment_mean = np.mean(segment[~mask[start:end]])
-            scale[ii] = np.mean(segment[masked_indicator]) / segment_mean
-    return del_sites, scale
-
-
 def _get_time():
     """
     Return a string representing the time and date with yy-mm-dd format.
     """
     return '[' + datetime.strftime(datetime.now(), '%y-%m-%d %H:%M:%S') + ']'
 
-
-def regions_to_mask(regions, L=None):
-    """
-    Return a boolean mask array that equals 0 within `regions` and 1 elsewhere.
-    """
-    if L is None:
-        L = regions[-1, 1]
-    mask = np.ones(L, dtype=bool)
-    for (start, end) in regions:
-        if start > L:
-            break
-        if end > L:
-            end = L
-        mask[start:end] = 0
-    return mask
-
-
-def mask_to_regions(mask):
-    """
-    Return an array representing the regions that are not masked in a boolean
-    array (0s).
-    """
-    jumps = np.diff(np.concatenate(([1], mask, [1])))
-    starts = np.where(jumps == -1)[0]
-    ends = np.where(jumps == 1)[0]
-    regions = np.stack([starts, ends], axis=1)
-    return regions
-
-
-def collapse_regions(regions):
-    """
-    Collapse any overlapping elements in an array together.
-    """
-    return mask_to_regions(regions_to_mask(regions))
-
-
-def intersect_regions(regions_arrs, L=None):
-    """
-    Form an array of regions from the intersection of sites in input regions
-    arrays.
-
-    :param regions_arrs: List of regions arrays.
-    :param L: Maximum position to include (default None).
-
-    :returns: Array of regions composed of shared sites.
-    """
-    if L is None:
-        L = max([regions[-1, 1] for regions in regions_arrs])
-    coverage = np.zeros(L, dtype=np.uint8)
-    for elements in regions_arrs:
-        for (start, end) in elements:
-            coverage[start:end] += 1
-    boolmask = coverage < len(regions_arrs)
-    isec = mask_to_regions(boolmask)
-    return isec
-
-
-def add_regions(regions_arrs, L=None):
-    """
-    Form an array of regions from the union of covered sites in several input
-    regions arrays.
-    """
-    if L is None:
-        L = max([regions[-1, 1] for regions in regions_arrs])
-    coverage = np.zeros(L, dtype=np.uint8)
-    for elements in regions_arrs:
-        for (start, end) in elements:
-            coverage[start:end] += 1
-    boolmask = coverage < 1
-    union = mask_to_regions(boolmask)
-    return union
-
-
-def subtract_regions(elements0, elements1, L=None):
-    """
-    Get an array of regions representing sites that belong to regions in
-    `elements0` and not `elements1`
-    """
-    if L is None:
-        L = max((elements0[-1, 1], elements1[-1, 1]))
-    boolmask = np.ones(L, dtype=bool)
-    for (start, end) in elements0:
-        boolmask[start:end] = False
-    for (start, end) in elements1:
-        boolmask[start:end] = True
-    ret = mask_to_regions(boolmask)
-    return ret
-
-
-def construct_site_map(intervals, values, L=None):
-    """
-    Construct a site-resolution map from a set of window starts/ends `intervals`
-    and an array of window `values`.
-    """
-    assert len(intervals) == len(values)
-    if L is None:
-        L = int(intervals[-1, 1])
-    site_map = np.zeros(L, dtype=np.float64)
-    for ii, (start, end) in enumerate(intervals):
-        if start >= L:
-            break
-        if end > L:
-            end = L
-        site_map[start:end] = values[ii]
-    return site_map
-
-
-def compute_windowed_average(intervals, site_map, fill_val=0):
-    """
-    Compute windowed averages of some site-resolution quantity `vec`. Non-
-    numeric (nan) values are ignored- windows where all values are nan are
-    left with averages of zero. Also returns an array holding the count of sites
-    with non-missing in each window.
-
-    If intervals exceed the length of site map, no error is raised.
-
-    :param intervals: Array of interval starts/ends.
-    :param site_map: Site-resolution ratemap.
-    :param float fill_val: Default value for windows where all data in 
-        `site_map` are missing (default 0). 
-
-    :returns: Arrays of windowed site counts and window averages.
-    """
-    num_sites = np.zeros(len(intervals), dtype=np.int64)
-    avg_rate = np.full(len(intervals), fill_val, dtype=np.float64)
-    for ii, (start, end) in enumerate(intervals):
-        if np.all(np.isnan(site_map[start:end])):
-            continue
-        else:
-            num_sites[ii] = np.count_nonzero(np.isfinite(site_map[start:end]))
-            avg_rate[ii] = np.nanmean(site_map[start:end])
-    return num_sites, avg_rate
 
 
 def read_bedfile(fname, filter_col=None, sep=None):
@@ -1047,26 +1016,3 @@ def write_uniform_mutation_interval(fname, L, u, chrom):
     }
     pandas.DataFrame(data).to_csv(fname, index=False)
     return
-
-
-def resolve_element_overlaps(element_arrs, L=None):
-    """
-    Resolve overlaps between classes of elements in a brute-force manner, 
-    using order in the list `element_arrs` to determine priority.
-
-    Where overlap exists between arrays, the lower-priority array has its
-    overlapping sites excised. 
-    """
-    if not L:
-        L = max(e[-1, 1] for e in element_arrs)
-    covered = np.zeros(L)
-    resolved_arrs = []
-    for elements in element_arrs:
-        mask = regions_to_mask(elements, L=L)
-        overlaps = np.logical_and(mask == 0, covered == 1)
-        print(_get_time(), f'eliminated {overlaps.sum()} overlaps')
-        mask[overlaps] = 1
-        resolved_arrs.append(mask_to_regions(mask))
-        covered[~mask] += 1
-    assert not np.any(covered > 1)
-    return resolved_arrs
