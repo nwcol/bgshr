@@ -261,15 +261,19 @@ def unlinked_CBGS(U, dfe, ss=None, grid_size=500):
     :returns: Scalar unlinked B-value
     """
     if ss is None:
-        ss = np.concatenate([-np.logspace(0, -6, grid_size - 1), [0]])
+        ss = np.append(-np.logspace(0, -6, grid_size - 1), 0)
     else:
         # ss must begin at -1 and increase monotonically
         assert np.all(np.diff(ss) > 0)
         assert ss[0] == -1 and ss[-1] == 0
 
     weights = Util.get_dfe_weights(ss, dfe)
-    unlinked_Bs = unlinked_reduction_CBGS(ss[:-1], U)
-    unlinked_B = Util.integrate_with_weights(unlinked_Bs, weights[:-1])
+    # Consider only s lower than -1 / min(Ns)
+    min_s = -1 / np.min(Ns)
+    ss_to_use = ss[ss < min_s]
+    weights_to_use = weights[ss < min_s]
+    unlinked_Bs = unlinked_reduction_CBGS(ss_to_use, U)
+    unlinked_B = Util.integrate_with_weights(unlinked_Bs, weights_to_use)
     return unlinked_B
 
 
@@ -415,7 +419,6 @@ def reduction_CBGS_n_epoch(Ns, Ts, s, u, r, L=1, scale_mutation=True):
     recombination rates. Instead, with scale_mutation=True, we rescale u to be
     larger (Ne*u ~ O(1)), while ensuring that still u<<s. Then we scale the
     B value back to the original u value.
-
     """
     if -s <= 1 / np.min(Ns):
         warnings.warn(
@@ -526,3 +529,56 @@ def build_lookup_table_n_epoch(
                 new_data.append(new_row)
     df_new = pandas.DataFrame(new_data, columns=cols)
     return df_new
+
+
+def unlinked_CBGS_n_epoch(U, dfe, Ts, Ns, ss=None, grid_size=500):
+    """
+    Computes an unlinked B-value for an n-epoch model defined by piecewise-
+    constant effective sizes `Ns` and epochs `Ts`.
+
+    :param U: Scalar deleterious mutation rate of unlinked sites.
+    :param dfe: Dictionary defining DFE parameters. See `Util.get_weights_dfe`.
+    :param Ts: Monotonically increasing epoch boundaries. Should start with 0.
+    :param Ns: Effective sizes for each epoch. `Ns[0]` is the size between
+        time `Ts[0]` and `Ts[1]`, and `Ns[-1]` is the ancestral size.
+    :param ss: Optional grid of selection coefficients. If None (default),
+        constructs a log-spaced grid of size `grid_size`.
+    :param grid_size: Optional number of selection coefficients to use for
+        discretizing the DFE and integrating B (default 500).
+    """
+    # Construct ss grid
+    if ss is None:
+        ss = np.append(-np.logspace(0, -6, grid_size - 1), 0)
+    else:
+        # ss must begin at -1 and increase monotonically
+        assert np.all(np.diff(ss) > 0)
+        assert ss[0] == -1 and ss[-1] == 0
+
+    # Consider only s lower than -1 / min(Ns)
+    min_s = -1 / np.min(Ns)
+    weights = Util.get_dfe_weights(ss, dfe)
+    ss_to_use = ss[ss < min_s]
+    weights_to_use = weights[ss < min_s]
+
+    r = 0.5
+    unlinked_Bs = np.array([reduction_CBGS_n_epoch(
+        Ns, Ts, s, U, r, scale_mutation=True) for s in ss_to_use])
+    unlinked_B = Util.integrate_with_weights(unlinked_Bs, weights_to_use)
+    return unlinked_B
+
+
+def unlinked_CBGS_n_epoch_df(U, dfe, df, ss=None, grid_size=500):
+    """
+    Extracts a demographic model with piecewise size history from a lookup
+    table `df`, then uses it to predict unlinked B.
+
+    :param dfe: Lookup table with n-epoch history.
+    See `unlinked_CBGS_n_epoch` for other arguments.
+    """
+    Ts_str = next(iter(set(df["Ts"])))
+    Ns_str = next(iter(set(df["Ns"])))
+    Ts = [int(float(x)) for x in Ts_str.split(";")]
+    Ns = [int(float(x)) for x in Ns_str.split(";")]
+    unlinked_B = unlinked_CBGS_n_epoch(
+        U, dfe, Ts, Ns, ss=ss, grid_size=grid_size)
+    return unlinked_B

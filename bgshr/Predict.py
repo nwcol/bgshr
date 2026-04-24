@@ -91,6 +91,8 @@ def Bvals(
             r_dists = _get_distances(xs, elements, rmap)
 
         for j, s_val in enumerate(all_s):
+            if s_val == 0:
+                continue
             for i, (e, u_val) in enumerate(zip(elements, all_u)):
                 # if we correct for local B value, update the s value in this element
                 u_elem = B_elem[i] * u_val
@@ -151,7 +153,7 @@ def Bvals_dfe(
     rmap=None,
     r=None,
     elements=[],
-    max_r=0.1,
+    max_dist=0.1,
     r_dists=None,
     dfe=None,
     Bmap=None
@@ -160,7 +162,7 @@ def Bvals_dfe(
     Integrate across a DFE.
     """
     if ss is None:
-        ss = np.sort(list(set([k[1] for k in splines.keys()])))[:-1]
+        ss = np.sort(list(set([k[1] for k in splines.keys()])))
 
     Bs = Bvals(
         xs,
@@ -236,12 +238,9 @@ def interference_Bvals(
     windows=None,
     U_arrs=None,
     rmap=None,
-    r=None,
-    L=None,
-    ss=None,
-    max_dists=None,
+    max_dist=None,
     dfes=None,
-    Bmap=None,
+    n_corrs=0,
     chunk_size=1000,
     n_cores=1,
     B_unlinked=None,
@@ -256,45 +255,45 @@ def interference_Bvals(
         Bmap = None
     else:
         assert B_unlinked < 1
-        est_L = max([windows[-1, 1], xs[-1]])
-        Bmap = get_Bmap([0, est_L], [B_unlinked, B_unlinked])
+        L = max([windows[-1, 1], xs[-1]])
+        Bmap = get_Bmap([0, L], [B_unlinked, B_unlinked])
 
-    Bs = bgshr.Predict.Bvals_fast(
+    Bs = Bvals_fast(
         xs,
         splines,
         windows=windows,
         U_arrs=U_arrs,
         rmap=rmap,
+        max_dist=max_dist,
         dfes=dfes,
-        max_dists=max_dists,
+        Bmap=Bmap,
         chunk_size=chunk_size,
-        n_cores=n_cores,
-        Bmap=Bmap
+        n_cores=n_cores
     )
     Bs *= B_unlinked
     interf_Bs = [Bs]
     if verbose:
-        pass
+        print(Util._get_time(), "completed initial B-prediction")
 
     for i in range(n_corrs):
         Bs0 = Bs
-        Bmap = bgshr.Predict.get_Bmap(xs, Bs0)
-        Bs = bgshr.Predict.Bvals_fast(
+        Bmap = get_Bmap(xs, Bs0)
+        Bs = Bvals_fast(
             xs,
             splines,
             windows=windows,
             U_arrs=U_arrs,
             rmap=rmap,
+            max_dist=max_dist,
             dfes=dfes,
-            max_dists=max_dists,
+            Bmap=Bmap,
             chunk_size=chunk_size,
-            n_cores=n_cores,
-            Bmap=Bmap
+            n_cores=n_cores
         )
         Bs *= B_unlinked
         interf_Bs.append(Bs)
         if verbose:
-            pass
+            print(Util._get_time(), f"completed interference correction {i+1}")
     return interf_Bs
 
 
@@ -307,7 +306,7 @@ def Bvals_fast(
     r=None,
     L=None,
     ss=None,
-    max_dists=None,
+    max_dist=None,
     dfes=None,
     Bmap=None,
     chunk_size=1000,
@@ -353,7 +352,7 @@ def Bvals_fast(
             r,
             L,
             ss,
-            max_dists,
+            max_dist,
             dfes,
             Bmap,
             chunk_size,
@@ -401,20 +400,28 @@ def Bvals_fast(
         # Instantiate B arrays
         Bs = [np.ones((len(ss), len(xs))) for _ in U_arrs]
 
+        # If a fixed maximum distance wasn't given, compute one for each `ss`
+        if max_dist is None:
+            test_dists = np.logspace(-8, 1, 200)
+            max_dists = []
+            for s in ss:
+                idx = np.where(splines[(uL, s)](test_dists) > 1 - 1e-10)[0][0]
+                max_dists.append(test_dists[idx])
+        else:
+            max_dists = [max_dist] * len(ss)
+
         # Loop over s coefficients and constraint categories
         distances = _get_distances(xs, windows, rmap)
         for i, s in enumerate(ss):
             if s == 0:
                 continue
-            if max_dists is not None:
-                max_dist = max_dists[i]
-                # Indices ...
-                lower_lim = np.searchsorted(
-                    _get_signed_distances(xs[0], windows, rmap), -max_dist)
-                upper_lim = np.searchsorted(
-                    _get_signed_distances(xs[-1], windows, rmap), max_dist)
-            else:
-                lower_lim, upper_lim = 0, -1
+
+            # Find
+            max_dist = max_dists[i]
+            dists_below = _get_signed_distances(xs[0], windows, rmap)
+            lower_lim = np.searchsorted(dists_below, -max_dist)
+            dists_above = _get_signed_distances(xs[-1], windows, rmap)
+            upper_lim = np.searchsorted(dists_above, max_dist)
 
             if Bmap is None:
                 unit_Bs = splines[(uL, s)](distances[lower_lim:upper_lim])

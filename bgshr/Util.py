@@ -185,12 +185,12 @@ def fill_in_lookup_table(df, n_steps=16, max_M=10):
     """
     ss = np.sort(np.unique(df["s"]))
     rs = np.sort(np.unique(df["r"]))
-    # rs_extend = np.logspace(np.log10(max_r), np.log10(0.5), n_steps + 1)[1:]
+
     if np.max(rs) == 0.5:
         Ms = inverse_haldane_map_function(rs[:-1])
-
     else:
         Ms = inverse_haldane_map_function(rs)
+
     Ms_extend = np.logspace(np.log10(Ms[-1]), np.log10(max_M), n_steps + 1)[1:]
     rs_extend = haldane_map_function(Ms_extend)
 
@@ -330,7 +330,13 @@ def adjust_recombination_map(rmap, bmap):
     return rmap
 
 
-def load_recombination_map(fname, L=None, scaling=1):
+def load_recombination_map(
+    fname,
+    L=None,
+    scaling=1,
+    pos_col="Position(bp)",
+    rate_col="Rate(cM/Mb)"
+):
     """
     Get positions and rates to build recombination map.
 
@@ -342,8 +348,8 @@ def load_recombination_map(fname, L=None, scaling=1):
     the final data point.
     """
     map_df = pandas.read_csv(fname, sep="\\s+")
-    pos = np.concatenate(([0], map_df["Position(bp)"]))
-    rates = np.concatenate(([0], map_df["Rate(cM/Mb)"])) / 100 / 1e6
+    pos = np.concatenate(([0], map_df[pos_col]))
+    rates = np.concatenate(([0], map_df[rate_col])) / 100 / 1e6
     if L is not None:
         if L > pos[-1]:
             pos = np.insert(pos, len(pos), L)
@@ -424,14 +430,14 @@ def compute_window_averages(windows, site_map):
     :returns: Array of window averages.
     """
     num_sites = np.zeros(len(windows), dtype=np.int64)
-    avgs = np.zeros(len(windows), fill_val, dtype=np.float64)
+    avgs = np.zeros(len(windows), dtype=np.float64)
     for ii, (start, end) in enumerate(windows):
         if np.all(site_map[start:end].mask):
             continue
         else:
             num_sites[ii] = np.sum(np.logical_not(site_map[start:end].mask))
             avgs[ii] = np.mean(site_map[start:end])
-    return num_sites, avgs
+    return avgs, num_sites
 
 
 def build_site_map(intervals, values, L=None):
@@ -458,7 +464,7 @@ def build_site_map(intervals, values, L=None):
     return site_map
 
 
-def compute_window_mutation_rates(elements, windows, u, fill_val="mean"):
+def _compute_window_mutation_rates(elements, windows, u, fill_val="mean"):
     """
     Computes sums of the deleterious mutation rate in an array of elements,
     divided into `windows`.
@@ -472,17 +478,18 @@ def compute_window_mutation_rates(elements, windows, u, fill_val="mean"):
         L = windows[-1, 1]
         u_arr = u * np.ones(L)
     else:
-        L = len(u_map)
+        L = len(u)
         # Windows shouldn't extend beyond the end of the chromosome
         assert windows[-1, 1] <= L
         u_arr = 1 * u
+    assert not np.any(np.isnan(u_arr))
 
-    if fill == "mean":
-        fill = np.nanmean(u_map)
+    if fill_val == "mean":
+        fill_val = np.mean(u_arr)
     else:
-        assert isinstance(fill, float)
+        assert isinstance(fill_val, float)
 
-    element_map = ~regions_to_mask(elements, L=L)
+    element_map = ~elements_to_mask(elements, L=L)
     window_sites = np.zeros(len(windows), np.int64)
     window_U = np.zeros(len(windows), np.float64)
 
@@ -491,13 +498,62 @@ def compute_window_mutation_rates(elements, windows, u, fill_val="mean"):
         if n_sites == 0:
             continue
         window_sites[i] = n_sites
-        u_elem = u_map[start:end][element_map[start:end]]
-        if np.all(np.isnan(u_elem)):
-            window_U[i] = fill * len(u_elem)
+        u_elem = u_arr[start:end][element_map[start:end]]
+        if np.all(u_elem.mask):
+            window_U[i] = fill_val * len(u_elem)
         else:
-            window_U[i] = np.nansum(u_elem)
-            window_U[i] += fill * np.count_nonzero(np.isnan(u_elem))
+            window_U[i] = np.sum(u_elem)
+            window_U[i] += fill_val * np.sum(u_elem.mask)
     return window_sites, window_U
+
+
+def compute_window_mutation_rates(windows, elements, u, fill_val="mean"):
+    """
+    """
+    if np.isscalar(u):
+        L = windows[-1, 1]
+        u_arr = u * np.ma.array(np.ones(L), mask=False)
+    else:
+        # Windows shouldn't extend beyond the end of the chromosome
+        L = len(u)
+        assert windows[-1, 1] <= L
+        u_arr = 1 * u
+    assert not np.any(np.isnan(u_arr))
+
+    if fill_val == "mean":
+        fill_val = np.mean(u_arr)
+    else:
+        assert isinstance(fill_val, float)
+
+    sites = np.zeros(len(windows), np.int64)
+    U_arr = np.zeros(len(windows), np.float64)
+    index, window_elems = decompose_elements(windows, elements)
+    for idx, (start, end) in zip(index, window_elems):
+        elem_sites = end - start
+        sites[idx] += elem_sites
+        u_elem = u_arr[start:end]
+        if np.all(u_elem.mask):
+            U_arr[idx] += fill_val * elem_sites
+        else:
+            n_masked = np.sum(u_elem.mask)
+            U_arr[idx] += np.sum(u_elem) + fill_val * n_masked
+    return U_arr, sites
+
+
+def decompose_elements(windows, elements):
+    """
+    """
+    elem_mask = elements_to_mask(elements)
+    index = []
+    elems_out = []
+    for i, (start, end) in enumerate(windows):
+        segment = elem_mask[start:end]
+        elems = mask_to_elements(segment) + start
+        for e in elems:
+            index.append(i)
+            elems_out.append(e)
+    elems_out = np.array(elems_out)
+    return index, elems_out
 
 
 def filter_empty_windows(windows, U_arrs):
@@ -509,6 +565,35 @@ def filter_empty_windows(windows, U_arrs):
     filtered_windows = windows[keep]
     filtered_U_arrs = [Us[keep] for Us in U_arrs]
     return filtered_windows, filtered_U_arrs
+
+
+def compute_element_mutation_rates(elements, u_arr, fill_val="mean"):
+    """
+    Return an array of average mutation rates for each interval in `elements`.
+
+    :param elements:
+    :param u_arr:
+    :param fill_val:
+    """
+
+    # Elements shouldn't extend beyond the end of the chromosome
+    assert elements[-1, 1] <= len(u_arr)
+    assert not np.any(np.isnan(u_arr))
+
+    if fill_val == "mean":
+        fill_val = np.mean(u_arr)
+    else:
+        assert isinstance(fill_val, float)
+
+    element_u = np.zeros(len(elements), np.float64)
+
+    for i, (start, end) in enumerate(elements):
+        u_elem = u_arr[start:end]
+        if np.all(u_elem.mask):
+            element_u[i] = fill_val
+        else:
+            element_u[i] = np.mean(u_elem)
+    return element_u
 
 
 def load_mutation_arrays(
@@ -659,7 +744,7 @@ def resolve_elements(elements, L=None, verbose=False):
             covered_sites[l:r] = True
         resolved_elements.append(resolved_elems)
         if verbose and i > 0:
-            print(f"removed {len(redundant_sites)} "
+            print(_get_time(), f"removed {len(redundant_sites)} "
                   f"redundant sites from element class {i}")
     return resolved_elements
 
@@ -847,6 +932,74 @@ def weights_gamma_neutral_dfe(ss, shape, scale, p_neu):
 
 
 def scale_genome_table(df, scale):
+    """
+    """
+
+    def weighted_avg(quantities, weights):
+        return (weights * quantities).sum() / weights.sum()
+
+    windows = np.stack([df["chromStart"], df["chromEnd"]], axis=1)
+    L = windows[-1, 1]
+    scaled_windows = np.stack(
+        (np.arange(0, L, scale, dtype=np.int64),
+        np.arange(scale, L + scale, scale, dtype=np.int64)), axis=1)
+    # Find the index in `scaled_windows` that corresponds to each of `windows`
+    window_idx = np.searchsorted(scaled_windows[:, 1], windows[:, 1])
+    df_arrs = {col: np.array(df[col]) for col in df}
+    scaled_data = {col: np.zeros(len(scaled_windows), dtype=df_arrs[col].dtype)
+                   for col in df}
+
+    try:
+        chrom = list(set(df["chrom"]))[0]
+    except:
+        chrom = list(set(df["#chrom"]))[0]
+
+    scaled_data["chrom"] = [chrom] * len(scaled_windows)
+    scaled_data["chromStart"][:] = scaled_windows[:, 0]
+    scaled_data["chromEnd"][:] = scaled_windows[:, 1]
+
+    for ii in range(len(scaled_windows)):
+        where = np.where(window_idx == ii)
+        scaled_data["num_sites"][ii] = df_arrs["num_sites"][where].sum()
+        if scaled_data["num_sites"][ii] == 0:
+            continue
+
+        # We take a simple average of B and r across retained windows
+        if "avg_rec" in df_arrs:
+            scaled_data["avg_rec"][ii] = df_arrs["avg_rec"][where].mean()
+
+        scaled_data["B"][ii] = df_arrs["B"][where].mean()
+        # iterate across interference Bs.....
+
+        # We take weighted averages across other quantities
+        if "avg_mut" in df_arrs:
+            scaled_data["avg_mut"][ii] = weighted_avg(
+                df_arrs["avg_mut"][where], df_arrs["num_sites"][where])
+
+        if "del_sites" in df_arrs:
+            scaled_data["del_sites"][ii] = df_arrs["del_sites"][where].sum()
+            if scaled_data["del_sites"][ii] > 0:
+                scaled_data["exp_del_pi"][ii] = weighted_avg(
+                    df_arrs["exp_del_pi"][where], df_arrs["del_sites"][where])
+            neu_sites = (df_arrs["num_sites"][where] - df_arrs["del_sites"][where])
+
+            if np.sum(neu_sites) > 0:
+                scaled_data["exp_neu_pi"][ii] = weighted_avg(
+                    df_arrs["exp_neu_pi"][where], neu_sites)
+
+        scaled_data["exp_pi"][ii] = weighted_avg(
+            df_arrs["exp_pi"][where], df_arrs["num_sites"][where])
+
+        if "avg_pi" in df_arrs:
+            scaled_data["avg_pi"][ii] = weighted_avg(
+                df_arrs["avg_pi"][where], df_arrs["num_sites"][where])
+
+    scaled_df = pandas.DataFrame(scaled_data)
+    # scaled_df = scaled_df[scaled_df["num_sites"] > 0]
+    return scaled_df
+
+
+def _scale_genome_table(df, scale):
     # increase the scale of a table by a simple averaging across windows.
     # inserts nan in windows with no data
     if "chrom" in df.columns:
