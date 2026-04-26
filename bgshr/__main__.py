@@ -65,7 +65,6 @@ class CommonCommand(Command):
             help=""
         )
         self.parser.add_argument(
-            "-r",
             "--rmap",
             type=str, 
             default=None,
@@ -84,6 +83,7 @@ class CommonCommand(Command):
             help="recombination map rate column (default 'Rate(cM/Mb)')"
         )
         self.parser.add_argument(
+            "-r",
             "--rec_rate",
             type=float, 
             default=None,
@@ -97,7 +97,6 @@ class CommonCommand(Command):
             help="chromosome length (defaults to XXXX)"
         )
         self.parser.add_argument(
-            "-u",
             "--umap",
             type=str, 
             default=None,
@@ -116,6 +115,7 @@ class CommonCommand(Command):
             help="mutation map rate column (default 'rate')"
         )
         self.parser.add_argument(
+            "-u",
             "--mut_rate",
             type=float, 
             default=None,
@@ -272,11 +272,12 @@ def predict(args):
     # DFE handling
     dfes = get_dfes(args.shapes, args.scales, args.p_neus)
 
-    df, splines = get_df(
+    df, splines = get_lookup_table(
         args.lookup_tbl,
         Ne=args.Ne,
         n_s_cbgs=args.n_s_cbgs,
-        cbgs_start=args.cbgs_start)
+        cbgs_start=args.cbgs_start,
+        verbose=args.verbose)
 
     # Load mutation rates
     if args.umap is None and args.L is None:
@@ -303,12 +304,14 @@ def predict(args):
     windows, U_arrs = Util.filter_empty_windows(windows, U_arrs)
 
     # Optionally load a genetic mask to filter expected pi
+    # TODO masking verbosity
     if args.mask:
         mask_regions, chrom_num = Util.read_bedfile(args.mask)
         mask = Util.elements_to_mask(mask_regions, L=L)
+    # Otherwise, mask sites where the mutation map lacks data
     else:
         chrom_num = None
-        mask = None
+        mask = umap.mask
 
     if args.verbose:
         print(Util._get_time(), "loaded data")
@@ -316,6 +319,7 @@ def predict(args):
     # Set up focal site array
     xs = np.arange(args.spacing // 2, L - args.spacing // 2, args.spacing)
 
+    # Predict B-values at focal sites
     interf_Bs = Predict.interference_Bvals(
         xs,
         splines,
@@ -351,10 +355,24 @@ def predict(args):
         midpoints = np.mean(out_windows, axis=1)
         foc_B = Bmap(midpoints)
 
-    window_pi, num_sites = Util.compute_window_averages(out_windows, site_pi)
+    exp_pi, num_sites = Util.compute_window_averages(out_windows, site_pi)
 
     if args.verbose:
         print(Util._get_time(), "computed expected pi")
+
+    # Calculate other quantities of interest
+    comb_elements = Util.combine_elements(elements)
+    element_mask = Util.elements_to_mask(comb_elements, L=L)
+    # Re-mask `site_pi` to retain only selectively constrained sites
+    site_pi.mask = np.logical_or(mask, element_mask)
+    del_pi, del_sites = Util.compute_window_averages(out_windows, site_pi)
+
+    umap.mask = mask
+    avg_mut, _ = Util.compute_window_averages(out_windows, umap)
+    avg_rec = Util.compute_average_recombination_rate(out_windows, rmap)
+
+    if args.verbose:
+        print(Util._get_time(), "computed other maps")
 
     # Find the chromosome number
     if chrom_num is None:
@@ -366,20 +384,24 @@ def predict(args):
         "chrom": [chrom_num] * len(out_windows),
         "chromStart": out_windows[:, 0],
         "chromEnd": out_windows[:, 1],
-        "num_sites": num_sites}
+        "num_sites": num_sites,
+        "del_sites": del_sites,
+        "avg_mut": avg_mut,
+        "avg_rec": avg_rec}
 
     # Save interference correction rounds
     if args.save_corrs:
         for i, B_xs_i in enumerate(interf_Bs[:-1]):
             if res != args.spacing:
-                Bmap = bgshr.Predict.get_Bmap(xs, B_xs_i)
+                Bmap = Predict.get_Bmap(xs, B_xs_i)
                 foc_B_i = Bmap(midpoints)
             else:
                 foc_B_i = B_xs_i
             data[f"B_{i}"] = foc_B_i
 
     data["B"] = foc_B
-    data["exp_pi"] = window_pi
+    data["exp_del_pi"] = del_pi
+    data["exp_pi"] = exp_pi
     output = pandas.DataFrame(data)
     output.to_csv(args.out, index=False)
 
@@ -392,6 +414,8 @@ def fit_Ne(args):
     """
     Fits `Ne` to observed data.
     """
+
+    # TODO Fill in. Currently not tested.
 
     if args.verbose:
         print(Util._get_time(), "loading data")
@@ -467,8 +491,8 @@ def fit_Ne(args):
         ftol=1,
         full_output=True)
 
-    # ... write log file
-    # .... recover highest-LL maps from cache and save them.
+    # TODO write log file
+    # TODO recover highest-LL maps from cache and save them.
 
     return
 
@@ -503,7 +527,8 @@ def get_lookup_table(
     fname,
     Ne=None,
     n_s_cbgs=20,
-    cbgs_start=None
+    cbgs_start=None,
+    verbose=False
 ):
     """
     Loads a lookup table, optionally scales it, extends it with CBGS, and adds
@@ -533,7 +558,7 @@ def get_lookup_table(
         ss_extend = -np.logspace(0, np.log10(-cbgs_start), n_s_cbgs)
     df = ClassicBGS.extend_lookup_table(df, ss_extend)
 
-    if args.verbose:
+    if verbose:
         print(Util._get_time(), "extended lookup table s-grid from "
               f"{ss_extend[-1]:.3} in {len(ss_extend)} steps")
 
@@ -563,7 +588,7 @@ def get_umap(fname, rate_col="rate", u=None, L=None):
                 try:
                     u_tbl = pandas.read_csv(fname, sep="\\s+")
                 except:
-                    raise Valuerror("could not read mutation map file format")
+                    raise ValueError("could not read mutation map file format")
             starts = np.array(u_tbl[u_tbl.columns[1]])
             ends = np.array(u_tbl[u_tbl.columns[2]])
             windows = np.stack([starts, ends], axis=1)

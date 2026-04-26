@@ -399,6 +399,19 @@ def load_bedgraph_recombination_map(
     return ratemap
 
 
+def compute_average_recombination_rate(windows, rmap):
+    """
+    Calculates the average per-bp recombination rate of `rmap` in an array of
+    windows.
+
+    :param windows: Array of genomic intervals
+    :param rmap: Recombination map interpolation function
+    """
+    r_dists = rmap(windows[:, 1]) - rmap(windows[:, 0])
+    bp_dists = windows[:, 1] - windows[:, 0]
+    return r_dists / bp_dists
+
+
 def haldane_map_function(ds):
     """
     Returns recombination fraction following Haldane's map function.
@@ -777,57 +790,79 @@ def mask_to_elements(mask):
     return elements
 
 
-def intersect_regions(regions_arrs, L=None):
+def intersect_elements(elements, L=None):
     """
-    Form an array of regions from the intersection of sites in input regions
-    arrays.
+    Takes several arrays of `elements` and returns an array of regions where
+    all of them have coverage.
 
-    :param regions_arrs: List of regions arrays.
-    :param L: Maximum position to include (default None).
-
-    :returns: Array of regions composed of shared sites.
-    """
-    if L is None:
-        L = max([regions[-1, 1] for regions in regions_arrs])
-    coverage = np.zeros(L, dtype=np.uint8)
-    for elements in regions_arrs:
-        for (start, end) in elements:
-            coverage[start:end] += 1
-    boolmask = coverage < len(regions_arrs)
-    isec = mask_to_regions(boolmask)
-    return isec
-
-
-def add_regions(regions_arrs, L=None):
-    """
-    Form an array of regions from the union of covered sites in several input
-    regions arrays.
+    :param elements: List of elements arrays
+    :param L: Optional maximum position for output. If None (default), the
+        highest end position in `elements` is used.
     """
     if L is None:
-        L = max([regions[-1, 1] for regions in regions_arrs])
+        L = max([elems[-1, 1] for elems in elements])
     coverage = np.zeros(L, dtype=np.uint8)
-    for elements in regions_arrs:
-        for (start, end) in elements:
+    for elems in elements:
+        for (start, end) in elems:
+            if start >= L:
+                continue
+            if end > L:
+                end = L
             coverage[start:end] += 1
-    boolmask = coverage < 1
-    union = mask_to_regions(boolmask)
-    return union
+    mask = coverage < len(elements)
+    elements_out = mask_to_elements(mask)
+    return elements_out
 
 
-def subtract_regions(elements0, elements1, L=None):
+def combine_elements(elements, L=None):
     """
-    Get an array of regions representing sites that belong to regions in
-    `elements0` and not `elements1`
+    Returns an array of intervals representing all sites present in any
+    interval array in `elements`.
+
+    :param elements: List of elements arrays
+    :param L: Optional maximum position for output. If None (default), the
+        highest end position in `elements` is used.
+    """
+    if L is None:
+        L = max([elems[-1, 1] for elems in elements])
+    mask = np.ones(L, dtype=bool)
+    for elems in elements:
+        for (start, end) in elems:
+            if start >= L:
+                continue
+            if end > L:
+                end = L
+            mask[start:end] = False
+    elements_out = mask_to_elements(mask)
+    return elements_out
+
+
+def subtract_elements(elements0, elements1, L=None):
+    """
+    Returns an array of intervals representing sites that belong to `elements0`
+    but not `elements1`.
+
+    :param elements: List of elements arrays
+    :param L: Optional maximum position for output. If None (default), the
+        highest end position in `elements` is used.
     """
     if L is None:
         L = max((elements0[-1, 1], elements1[-1, 1]))
-    boolmask = np.ones(L, dtype=bool)
+    mask = np.ones(L, dtype=bool)
     for (start, end) in elements0:
-        boolmask[start:end] = False
+        if start >= L:
+            continue
+        if end > L:
+            end = L
+        mask[start:end] = False
     for (start, end) in elements1:
-        boolmask[start:end] = True
-    ret = mask_to_regions(boolmask)
-    return ret
+        if start >= L:
+            continue
+        if end > L:
+            end = L
+        mask[start:end] = True
+    elements_out = mask_to_elements(mask)
+    return elements_out
 
 
 # DFE discretization and weighting
@@ -846,6 +881,10 @@ def integrate_with_weights(vals, weights, u_fac=1):
 def integrate_with_dfe(vals, ss, dfe, u_fac=1):
     """
     Computes DFE weights and uses them to integrate across `vals`.
+
+    :param vals: Values to integrate
+    :param ss: Array of selection coefficients
+    :param dfe: Dictionary specifying DFE parameters. See `get_dfe_weights`.
     """
     weights = get_dfe_weights(ss, dfe)
     out = integrate_with_weights(vals, weights, u_fac=u_fac)
