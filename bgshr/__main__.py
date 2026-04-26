@@ -111,7 +111,7 @@ class CommonCommand(Command):
         self.parser.add_argument(
             "--umap_rate_col",
             type=str,
-            default=None,
+            default="rate",
             help="mutation map rate column (default 'rate')"
         )
         self.parser.add_argument(
