@@ -189,6 +189,11 @@ class CommonCommand(Command):
             help="path for output file (.csv)"
         )
         self.parser.add_argument(
+            "--rich",
+            action="store_true",
+            help="save extra data, including deleterious pi and mutation rate"
+        )
+        self.parser.add_argument(
             "-o",
             "--out",
             type=str,
@@ -296,7 +301,7 @@ def predict(args):
     # Load elements and compute their mutation rates
     elements = [Util.load_elements(f) for f in args.bed]
     elements = Util.resolve_elements(elements, verbose=args.verbose)
-    mean_ss = None # check order and raise warning ...
+    mean_ss = None # TODO check order and raise warning ...
     ws = args.window_size
     windows = np.stack([np.arange(0, L - ws, ws), np.arange(ws, L, ws)], axis=1)
     U_arrs = [Util.compute_window_mutation_rates(windows, elems, umap)[0]
@@ -360,34 +365,38 @@ def predict(args):
     if args.verbose:
         print(Util._get_time(), "computed expected pi")
 
-    # Calculate other quantities of interest
-    comb_elements = Util.combine_elements(elements)
-    element_mask = Util.elements_to_mask(comb_elements, L=L)
-    # Re-mask `site_pi` to retain only selectively constrained sites
-    site_pi.mask = np.logical_or(mask, element_mask)
-    del_pi, del_sites = Util.compute_window_averages(out_windows, site_pi)
-
-    umap.mask = mask
-    avg_mut, _ = Util.compute_window_averages(out_windows, umap)
-    avg_rec = Util.compute_average_recombination_rate(out_windows, rmap)
-
-    if args.verbose:
-        print(Util._get_time(), "computed other maps")
-
     # Find the chromosome number
     if chrom_num is None:
         bed_tbl = pandas.read_csv(args.bed[0], sep="\\s+")
         chrom_num = next(iter(bed_tbl[bed_tbl.columns[0]]))
 
-    # Save output in a .csv file
     data = {
         "chrom": [chrom_num] * len(out_windows),
         "chromStart": out_windows[:, 0],
         "chromEnd": out_windows[:, 1],
         "num_sites": num_sites,
-        "del_sites": del_sites,
-        "avg_mut": avg_mut,
-        "avg_rec": avg_rec}
+        "exp_pi": exp_pi,
+        "B": foc_B}
+
+    # Calculate other quantities of interest
+    if args.rich:
+        comb_elements = Util.combine_elements(elements)
+        element_mask = Util.elements_to_mask(comb_elements, L=L)
+        # Re-mask `site_pi` to retain only selectively constrained sites
+        del_sites_mask = np.logical_or(mask, element_mask)
+        site_pi.mask = del_sites_mask
+        data["exp_del_pi"], data["del_sites"] = Util.compute_window_averages(
+            out_windows, site_pi)
+
+        umap.mask = mask
+        data["avg_mut"], _ = Util.compute_window_averages(out_windows, umap)
+        umap.mask = del_sites_mask
+        data["del_mut"], _ = Util.compute_window_averages(out_windows, umap)
+        data["avg_rec"] = Util.compute_average_recombination_rate(
+            out_windows, rmap)
+
+        if args.verbose:
+            print(Util._get_time(), "computed other maps")
 
     # Save interference correction rounds
     if args.save_corrs:
@@ -399,9 +408,6 @@ def predict(args):
                 foc_B_i = B_xs_i
             data[f"B_{i}"] = foc_B_i
 
-    data["B"] = foc_B
-    data["exp_del_pi"] = del_pi
-    data["exp_pi"] = exp_pi
     output = pandas.DataFrame(data)
     output.to_csv(args.out, index=False)
 

@@ -972,109 +972,89 @@ def weights_gamma_neutral_dfe(ss, shape, scale, p_neu):
 
 def scale_genome_table(df, scale):
     """
+    Scales a table with genomic information, `df`, to a coarser resolution
+    (larger window sizes).
+
+    :param df: Table with window starts/ends and window information.
+        Intervals need not all be of the same size, but they must all be
+        divisible by the target `scale`.
+        TODO list the columns expected/supported
+    :param scale: Target resolution.
     """
 
-    def weighted_avg(quantities, weights):
-        return (weights * quantities).sum() / weights.sum()
+    def weighted_avg(vals, weights):
+        return (weights * vals).sum() / weights.sum()
 
-    windows = np.stack([df["chromStart"], df["chromEnd"]], axis=1)
-    L = windows[-1, 1]
-    scaled_windows = np.stack(
-        (np.arange(0, L, scale, dtype=np.int64),
-        np.arange(scale, L + scale, scale, dtype=np.int64)), axis=1)
-    # Find the index in `scaled_windows` that corresponds to each of `windows`
-    window_idx = np.searchsorted(scaled_windows[:, 1], windows[:, 1])
-    df_arrs = {col: np.array(df[col]) for col in df}
-    scaled_data = {col: np.zeros(len(scaled_windows), dtype=df_arrs[col].dtype)
-                   for col in df}
-
-    try:
-        chrom = list(set(df["chrom"]))[0]
-    except:
-        chrom = list(set(df["#chrom"]))[0]
-
-    scaled_data["chrom"] = [chrom] * len(scaled_windows)
-    scaled_data["chromStart"][:] = scaled_windows[:, 0]
-    scaled_data["chromEnd"][:] = scaled_windows[:, 1]
-
-    for ii in range(len(scaled_windows)):
-        where = np.where(window_idx == ii)
-        scaled_data["num_sites"][ii] = df_arrs["num_sites"][where].sum()
-        if scaled_data["num_sites"][ii] == 0:
-            continue
-
-        # We take a simple average of B and r across retained windows
-        if "avg_rec" in df_arrs:
-            scaled_data["avg_rec"][ii] = df_arrs["avg_rec"][where].mean()
-
-        scaled_data["B"][ii] = df_arrs["B"][where].mean()
-        # iterate across interference Bs.....
-
-        # We take weighted averages across other quantities
-        if "avg_mut" in df_arrs:
-            scaled_data["avg_mut"][ii] = weighted_avg(
-                df_arrs["avg_mut"][where], df_arrs["num_sites"][where])
-
-        if "del_sites" in df_arrs:
-            scaled_data["del_sites"][ii] = df_arrs["del_sites"][where].sum()
-            if scaled_data["del_sites"][ii] > 0:
-                scaled_data["exp_del_pi"][ii] = weighted_avg(
-                    df_arrs["exp_del_pi"][where], df_arrs["del_sites"][where])
-            neu_sites = (df_arrs["num_sites"][where] - df_arrs["del_sites"][where])
-
-            if np.sum(neu_sites) > 0:
-                scaled_data["exp_neu_pi"][ii] = weighted_avg(
-                    df_arrs["exp_neu_pi"][where], neu_sites)
-
-        scaled_data["exp_pi"][ii] = weighted_avg(
-            df_arrs["exp_pi"][where], df_arrs["num_sites"][where])
-
-        if "avg_pi" in df_arrs:
-            scaled_data["avg_pi"][ii] = weighted_avg(
-                df_arrs["avg_pi"][where], df_arrs["num_sites"][where])
-
-    scaled_df = pandas.DataFrame(scaled_data)
-    # scaled_df = scaled_df[scaled_df["num_sites"] > 0]
-    return scaled_df
-
-
-def _scale_genome_table(df, scale):
-    # increase the scale of a table by a simple averaging across windows.
-    # inserts nan in windows with no data
     if "chrom" in df.columns:
         chrom = next(iter(df["chrom"]))
     elif "#chrom" in df.columns:
         chrom = next(iter(df["#chrom"]))
     else:
         chrom = "none"
-    starts = np.array(df["chromStart"])
-    ends = np.array(df["chromEnd"])
-    # all windows from old data
-    old_scale = np.min(np.diff(starts))
-    full_starts = np.arange(0, starts[-1] + 1, old_scale)
-    start_idx = np.searchsorted(full_starts, starts)
-    L = ends[-1]
-    new_L = scale * int(np.ceil(L / scale))
-    new_starts = np.arange(0, new_L, scale)
-    new_ends = np.arange(scale, new_L + scale, scale)
-    data = {"chrom": [chrom] * len(new_starts),
-            "chromStart": new_starts,
-            "chromEnd": new_ends}
+
+    if "chromStart" in df:
+        windows0 = np.stack([df["chromStart"], df["chromEnd"]], axis=1)
+    elif "start" in df:
+        windows0 = np.stack([df["start"], df["end"]], axis=1)
+    else:
+        raise Valuerror("could not find window start/ends")
+
+    intervals0 = windows0[:, 1] - windows0[:, 0]
+    assert np.all(scale % intervals0 == 0)
+
+    L = windows0[-1, 1]
+    windows1 = np.stack((np.arange(0, L, scale, dtype=np.int64),
+        np.arange(scale, L + scale, scale, dtype=np.int64)), axis=1)
+
+    # Find the index in `windows1` that corresponds to each `windows0`
+    mapping = np.searchsorted(windows1[:, 1], windows0[:, 1])
+    idxs = list(range(len(windows1)))
+
+    # Start building output data
+    data = {
+        "chrom": [chrom] * len(windows1),
+        "chromStart": windows1[:, 0],
+        "chromEnd": windows1[:, 1]}
+
+    # Iterate over fields
     for col in df.columns[3:]:
-        old_map = np.array(df[col])
-        full_old_map = np.full(len(full_starts), np.nan)
-        full_old_map[start_idx] = old_map
-        spacer = np.full(int(new_L / old_scale - len(full_old_map)) , np.nan)
-        full_old_map = np.concatenate((full_old_map, spacer))
-        map_arr = np.reshape(full_old_map,
-            shape=(len(new_starts), len(full_old_map) // len(new_starts)))
-        if col == "num_sites":
-            new_map = np.nansum(map_arr, axis=1).astype(np.int64)
+        arr = np.array(df[col])
+        # Take simple (unweighted) averages of these quantities
+        if col in ["B", "r", "avg_rec"] or col[:2] == "B_":
+            data[col] = np.array([np.mean(arr[mapping == i]) for i in idxs])
+
+        # Take sums of these ones
+        elif col in ["num_sites", "del_sites", "neu_sites"]:
+            data[col] = np.array([np.sum(arr[mapping == i]) for i in idxs])
+
+        # Take weighted averages of these
+        elif col in ["exp_pi", "avg_pi", "avg_mut"]:
+            assert "num_sites" in df
+            num_sites = np.array(df["num_sites"])
+            data[col] = np.array(
+                [weighted_avg(arr[mapping == i], num_sites[mapping == i])
+                 for i in idxs])
+
+        elif col in ["exp_del_pi", "del_mut"]:
+            assert "del_sites" in df
+            del_sites = np.array(df["del_sites"])
+            data[col] = np.array(
+                [weighted_avg(arr[mapping == i], del_sites[mapping == i])
+                 for i in idxs])
+
+        elif col in ["exp_neu_pi", "neu_mut"]:
+            assert "neu_sites" in df
+            neu_sites = np.array(df["neu_sites"])
+            data[col] = np.array(
+                [weighted_avg(arr[mapping == i], neu_sites[mapping == i])
+                 for i in idxs])
+
+        # If unrecognized; just take the simple average
         else:
-            new_map = np.nanmean(map_arr, axis=1)
-        data[col] = new_map
-    new_df = pandas.DataFrame(data)
-    return new_df
+            data[col] = np.array([np.mean(arr[mapping == i]) for i in idxs])
+
+    df_out = pandas.DataFrame(data)
+    return df_out
 
 
 # Assorted utilities
