@@ -416,7 +416,7 @@ def Bvals_fast(
             if s == 0:
                 continue
 
-            # Find
+            # Find first/last windows to consider
             max_dist = max_dists[i]
             dists_below = _get_signed_distances(xs[0], windows, rmap)
             lower_lim = np.searchsorted(dists_below, -max_dist)
@@ -636,89 +636,3 @@ def _get_pi_dfe(df, dfe):
     Hls = 2 * np.array([df_sub[df_sub["s"] == s]["Hl"].iloc[0] for s in ss])
     pi_dfe = np.sum(Hls * weights)
     return pi_dfe
-
-
-
-
-
-
-
-#####
-
-
-
-
-
-
-
-
-
-def _dep_get_expected_pi0(
-    df,
-    avg_u,
-    num_sites,
-    u_arrs=None,
-    num_sites_dfes=None,
-    dfes=None
-):
-    """
-    Compute expected pi0 using windowed mutation rate data for several DFEs.
-
-    :param df: Lookup table
-    :param avg_u: Array of average mutation rates per window
-    :param num_sites: Array of accessible site counts per window
-    :param u_arrs: List of arrays with average mutation rates for each DFE class
-    :param num_sites_dfes: List of accessible site counts for each DFE class
-    """
-    assert len(dfes) == len(num_sites_dfes) == len(u_arrs)
-
-    # Check lookup table properties
-    assert len(set(df["uL"])) == 1
-    assert len(set(df["uR"])) == 1
-    uL = next(iter(set(df["uL"])))
-
-    # Neutral diversity
-    del_sites = np.sum(num_sites_dfes, axis=0)
-    neu_sites = num_sites - del_sites
-    # assert np.all(neu_sites >= 0)
-    print(np.count_nonzero(neu_sites < 0))
-    if len(u_arrs) > 0:
-        del_U = np.sum([u * L for L, u in zip(num_sites_dfes, u_arrs)], axis=0)
-        neu_U = (avg_u * num_sites) - del_U
-        neu_u = np.zeros(len(neu_U))
-        neu_u[neu_sites > 0] = neu_U[neu_sites > 0] / neu_sites[neu_sites > 0]
-        # assert np.all(neu_u >= 0)
-        neu_u[neu_u < 0] = 0
-    else:
-        neu_u = avg_u
-    pi0_df = np.unique(df["pi0"])[0]
-    neu_pi0 = 2 * pi0_df * neu_u / uL
-
-    # Deleterious diversity
-    if len(u_arrs) > 0:
-        sum_del_pi0 = 0.0
-        for u_arr, dfe_sites, dfe in zip(u_arrs, num_sites_dfes, dfes):
-            pi_dfe = _get_del_pi0_dfe(df, dfe)
-            sum_del_pi0 += pi_dfe * u_arr / uL * dfe_sites
-        # Average across deleterious diversity
-        del_pi0 = np.zeros(len(sum_del_pi0))
-        del_pi0[del_sites > 0] = (
-            sum_del_pi0[del_sites > 0] / del_sites[del_sites > 0])
-    else:
-        del_pi0, del_sites = 0, 0
-
-    # Weighted avg of neutral and deleterious diversity
-    pi0 = np.zeros(len(num_sites))
-    pi0[num_sites > 0] = (
-        (neu_pi0 * neu_sites + del_pi0 * del_sites)[num_sites > 0]
-        / num_sites[num_sites > 0])
-    return pi0, neu_pi0, del_pi0
-
-
-def _dep_get_del_pi0_dfe(df, dfe):
-    """
-    Integrate `Hl` (deleterious pi0) from a lookup table `df` across a gamma
-    or gamma-neutral DFE.
-    """
-
-    return del_pi0

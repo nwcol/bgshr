@@ -102,12 +102,6 @@ class CommonCommand(Command):
             default=None,
             help="mutation map file (.bedgraph, .csv, .txt or .npy)"
         )
-        #self.parser.add_argument(
-        #    "--umap_pos_col",
-        #    type=str,
-        #    default="",
-        #    help="mutation map position column (default )"
-        #)
         self.parser.add_argument(
             "--umap_rate_col",
             type=str,
@@ -296,17 +290,18 @@ def predict(args):
 
     # Load recombination map
     rmap = get_rmap(
-        args.rmap, args.rmap_pos_col, args.rmap_rate_col, args.rec_rate, L)
+        args.rmap,
+        args.rmap_pos_col,
+        args.rmap_rate_col,
+        args.rec_rate, L)
 
     # Load elements and compute their mutation rates
-    elements = [Util.read_bedfile(f) for f in args.bed]
-    elements = Util.resolve_elements(elements, verbose=args.verbose)
-    mean_ss = None # TODO check order and raise warning ...
-    ws = args.window_size
-    windows = np.stack([np.arange(0, L - ws, ws), np.arange(ws, L, ws)], axis=1)
-    U_arrs = [Util.compute_window_mutation_rates(windows, elems, umap)[0]
-              for elems in elements]
-    windows, U_arrs = Util.filter_empty_windows(windows, U_arrs)
+    elements, windows, U_arrs = get_elements(
+        args.bed,
+        umap,
+        L=L,
+        window_size=args.window_size,
+        verbose=args.verbose)
 
     # Optionally load a genetic mask to filter expected pi
     # TODO masking verbosity
@@ -500,33 +495,38 @@ def fit_Ne(args):
     # TODO write log file
     # TODO recover highest-LL maps from cache and save them.
 
+    # TODO
+    if chrom_num is None:
+        bed_tbl = pandas.read_csv(args.bed[0], sep="\\s+")
+        chrom_num = next(iter(bed_tbl[bed_tbl.columns[0]]))
+
+    data = {
+        "chrom": [chrom_num] * len(out_windows),
+        "chromStart": out_windows[:, 0],
+        "chromEnd": out_windows[:, 1],
+        "num_sites": num_sites,
+        "exp_pi": exp_pi,
+        "B": foc_B}
+
+    # Save interference correction rounds
+    if args.save_corrs:
+        for i, B_xs_i in enumerate(interf_Bs[:-1]):
+            if res != args.spacing:
+                Bmap = Predict.get_Bmap(xs, B_xs_i)
+                foc_B_i = Bmap(midpoints)
+            else:
+                foc_B_i = B_xs_i
+            data[f"B_{i}"] = foc_B_i
+
+    output = pandas.DataFrame(data)
+    output.to_csv(args.out, index=False)
+
+    if args.verbose:
+        print(Util._get_time(), "saved output")
     return
 
 
 # Helper functions for loading data with variable file type/structure
-
-
-def get_dfes(shapes, scales, p_neus):
-    """
-    Build DFE dictionaries from lists of DFE parameters.
-    """
-    assert len(shapes) == len(scales)
-
-    if p_neus is not None:
-        assert len(shapes) == len(p_neus)
-    else:
-        p_neus = [0] * len(shapes)
-
-    dfes = []
-    for shape, scale, p_neu in zip(shapes, scales, p_neus):
-        dfe = {"shape": shape, "scale": scale}
-        if p_neu > 0:
-            dfe["type"] = "gamma_neutral"
-            dfe["p_neu"] = p_neu
-        else:
-            dfe["type"] = "gamma"
-        dfes.append(dfe)
-    return dfes
 
 
 def get_lookup_table(
@@ -573,6 +573,29 @@ def get_lookup_table(
     # Make splines
     splines = Util.generate_linear_splines(df)[2]
     return df, splines
+
+
+def get_dfes(shapes, scales, p_neus):
+    """
+    Build DFE dictionaries from lists of DFE parameters.
+    """
+    assert len(shapes) == len(scales)
+
+    if p_neus is not None:
+        assert len(shapes) == len(p_neus)
+    else:
+        p_neus = [0] * len(shapes)
+
+    dfes = []
+    for shape, scale, p_neu in zip(shapes, scales, p_neus):
+        dfe = {"shape": shape, "scale": scale}
+        if p_neu > 0:
+            dfe["type"] = "gamma_neutral"
+            dfe["p_neu"] = p_neu
+        else:
+            dfe["type"] = "gamma"
+        dfes.append(dfe)
+    return dfes
 
 
 def get_umap(fname, rate_col="rate", u=None, L=None):
@@ -624,6 +647,22 @@ def get_rmap(
         assert r is not None and L is not None
         rmap = Util.build_uniform_rmap(r, L)
     return rmap
+
+
+def get_elements(fnames, umap, window_size=1000, verbose=False, L=None):
+    """
+    Load elements and element mutation rates.
+    """
+    if L is None:
+        L = len(umap)
+    elements = [Util.read_bedfile(f) for f in fnames]
+    elements = Util.resolve_elements(elements, verbose=verbose)
+    ws = window_size
+    windows = np.stack([np.arange(0, L - ws, ws), np.arange(ws, L, ws)], axis=1)
+    U_arrs = [Util.compute_window_mutation_rates(windows, elems, umap)[0]
+              for elems in elements]
+    windows, U_arrs = Util.filter_empty_windows(windows, U_arrs)
+    return elements, windows, U_arrs
 
 
 def main():

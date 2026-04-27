@@ -1002,8 +1002,20 @@ def scale_genome_table(df, scale):
     :param scale: Target resolution.
     """
 
+    def get_avg(vals):
+        if len(vals) == 0:
+            ret = np.nan
+        else:
+            ret = np.mean(vals)
+        return ret
+
     def weighted_avg(vals, weights):
-        return (weights * vals).sum() / weights.sum()
+        sum_weights = np.sum(weights)
+        if sum_weights == 0:
+            ret = np.nan
+        else:
+            ret = (weights * vals).sum() / sum_weights
+        return ret
 
     if "chrom" in df.columns:
         chrom = next(iter(df["chrom"]))
@@ -1026,6 +1038,14 @@ def scale_genome_table(df, scale):
     windows1 = np.stack((np.arange(0, L, scale, dtype=np.int64),
         np.arange(scale, L + scale, scale, dtype=np.int64)), axis=1)
 
+    # Drop intervals in `windows1` without any sites in them
+    # test = np.unique(np.searchsorted(windows1[:, 1], windows0[:, 1]))
+    # keep = np.zeros(len(windows1), bool)
+    # for i in range(len(windows1)):
+    #    if i in test:
+    #        keep[i] = True
+    # windows1 = windows1[keep]
+
     # Find the index in `windows1` that corresponds to each `windows0`
     mapping = np.searchsorted(windows1[:, 1], windows0[:, 1])
     idxs = list(range(len(windows1)))
@@ -1041,7 +1061,7 @@ def scale_genome_table(df, scale):
         arr = np.array(df[col])
         # Take simple (unweighted) averages of these quantities
         if col in ["B", "r", "avg_rec"] or col[:2] == "B_":
-            data[col] = np.array([np.mean(arr[mapping == i]) for i in idxs])
+            data[col] = np.array([get_avg(arr[mapping == i]) for i in idxs])
 
         # Take sums of these ones
         elif col in ["num_sites", "del_sites", "neu_sites"]:
