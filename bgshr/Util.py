@@ -477,49 +477,6 @@ def build_site_map(intervals, values, L=None):
     return site_map
 
 
-def _compute_window_mutation_rates(elements, windows, u, fill_val="mean"):
-    """
-    Computes sums of the deleterious mutation rate in an array of elements,
-    divided into `windows`.
-
-    :param elements:
-    :param windows:
-    :param u: Scalar mutation rate or array of site mutation rates.
-    :param fill_val:
-    """
-    if np.isscalar(u):
-        L = windows[-1, 1]
-        u_arr = u * np.ones(L)
-    else:
-        L = len(u)
-        # Windows shouldn't extend beyond the end of the chromosome
-        assert windows[-1, 1] <= L
-        u_arr = 1 * u
-    assert not np.any(np.isnan(u_arr))
-
-    if fill_val == "mean":
-        fill_val = np.mean(u_arr)
-    else:
-        assert isinstance(fill_val, float)
-
-    element_map = ~elements_to_mask(elements, L=L)
-    window_sites = np.zeros(len(windows), np.int64)
-    window_U = np.zeros(len(windows), np.float64)
-
-    for i, (start, end) in enumerate(windows):
-        n_sites = np.sum(element_map[start:end])
-        if n_sites == 0:
-            continue
-        window_sites[i] = n_sites
-        u_elem = u_arr[start:end][element_map[start:end]]
-        if np.all(u_elem.mask):
-            window_U[i] = fill_val * len(u_elem)
-        else:
-            window_U[i] = np.sum(u_elem)
-            window_U[i] += fill_val * np.sum(u_elem.mask)
-    return window_sites, window_U
-
-
 def compute_window_mutation_rates(windows, elements, u, fill_val="mean"):
     """
     """
@@ -667,6 +624,69 @@ def load_mutation_arrays(
 
 
 # Elements/constraint windows
+
+
+def read_bedfile(fname, filter_col=None, sep=None, L=None, get_chrom=False):
+    """
+    Load a bed file, returning an array of intervals and the chromosome number.
+
+    :param dict filter_col: Optional 1-dictionary for filtering intervals. If
+        given, return only intervals where the column named by the key of
+        `filter_col` has an entry matching `filter_col[key]`.
+    :param str sep: Optional separator string, defaults to "\t" if None.
+    """
+
+    # Check whether there is a header
+    if fname.endswith(".gz"):
+        with gzip.open(fname, "rb") as fin:
+            first_line = fin.readline().decode()
+    else:
+        with open(fname, "r") as fin:
+            first_line = fin.readline()
+
+    if "," in first_line:
+        split_line = first_line.split(",")
+        if sep is None:
+            sep = ","
+    else:
+        split_line = first_line.split()
+        if sep is None:
+            sep = r"\s+"
+
+    if split_line[1].isnumeric():
+        data = pandas.read_csv(fname, sep=sep, header=None)
+    else:
+        data = pandas.read_csv(fname, sep=sep)
+
+    if filter_col is not None:
+        assert len(filter_col) == 1
+        col_name = next(iter(filter_col))
+        data = data[data[col_name] == filter_col[col_name]]
+
+    cols = data.columns
+    starts = np.array(data[cols[1]]).astype(np.int64)
+    ends = np.array(data[cols[2]]).astype(np.int64)
+
+    if L:
+        # Delete elements with start >= L
+        keep = np.where(starts < L)[0]
+        starts = ends[keep]
+        ends = ends[keep]
+        # Truncate elements with end > L
+        to_trunc = np.where(ends > L)[0]
+        ends[to_trunc] = L
+
+    intervals = np.stack((starts, ends), axis=1)
+
+    if get_chrom:
+        uniq_chroms = list(set(data[cols[0]]))
+        if len(uniq_chroms) > 1:
+            warnings.warn(f"BED file has more than one unique chrom")
+        chrom = str(uniq_chroms[0])
+        ret = (intervals, chrom)
+    else:
+        ret = intervals
+    return ret
 
 
 def load_elements(bed_file, L=None):
@@ -1114,49 +1134,6 @@ def _get_time():
     Return a string representing the time and date with yy-mm-dd format.
     """
     return '[' + datetime.strftime(datetime.now(), '%y-%m-%d %H:%M:%S') + ']'
-
-
-
-def read_bedfile(fname, filter_col=None, sep=None):
-    """
-    Load a bed file, returning an array of intervals and the chromosome number.
-
-    :param dict filter_col: Optional 1-dictionary for filtering intervals. If
-        given, return only intervals where the column named by the key of
-        `filter_col` has an entry matching `filter_col[key]`.
-    :param str sep: Optional separator string, defaults to "\t" if None.
-    """
-    # Check whether there is a header
-    if fname.endswith(".gz"):
-        with gzip.open(fname, "rb") as fin:
-            first_line = fin.readline().decode()
-    else:
-        with open(fname, "r") as fin:
-            first_line = fin.readline()
-    if "," in first_line:
-        split_line = first_line.split(",")
-        if sep is None:
-            sep = ","
-    else:
-        split_line = first_line.split()
-        if sep is None:
-            sep = r"\s+"
-    if split_line[1].isnumeric():
-        data = pandas.read_csv(fname, sep=sep, header=None)
-    else:
-        data = pandas.read_csv(fname, sep=sep)
-    if filter_col is not None:
-        assert len(filter_col) == 1
-        col_name = next(iter(filter_col))
-        data = data[data[col_name] == filter_col[col_name]]
-    columns = data.columns
-    intervals = np.stack(
-        (data[columns[1]], data[columns[2]]), axis=1).astype(np.int64)
-    uniq_chroms = list(set(data[columns[0]]))
-    if len(uniq_chroms) > 1:
-        warnings.warn(f"Loaded bed file has more than one unique chrom")
-    chrom = str(uniq_chroms[0])
-    return intervals, chrom
 
 
 def write_bedfile(fname, intervals, chrom):

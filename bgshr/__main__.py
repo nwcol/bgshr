@@ -299,7 +299,7 @@ def predict(args):
         args.rmap, args.rmap_pos_col, args.rmap_rate_col, args.rec_rate, L)
 
     # Load elements and compute their mutation rates
-    elements = [Util.load_elements(f) for f in args.bed]
+    elements = [Util.read_bedfile(f) for f in args.bed]
     elements = Util.resolve_elements(elements, verbose=args.verbose)
     mean_ss = None # TODO check order and raise warning ...
     ws = args.window_size
@@ -311,7 +311,7 @@ def predict(args):
     # Optionally load a genetic mask to filter expected pi
     # TODO masking verbosity
     if args.mask:
-        mask_regions, chrom_num = Util.read_bedfile(args.mask)
+        mask_regions, chrom_num = Util.read_bedfile(args.mask, get_chrom=True)
         mask = Util.elements_to_mask(mask_regions, L=L)
     # Otherwise, mask sites where the mutation map lacks data
     else:
