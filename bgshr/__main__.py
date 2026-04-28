@@ -366,8 +366,8 @@ def compute_pi(args):
 
     # Compute expected diversity
     site_B = Bmap(np.arange(L))
-    site_pi0 = Predict.expected_pi0(umap, df, elements=elements, dfes=dfes)
-    site_pi = Predict.expected_pi(site_pi0, site_B, mask=mask)
+    site_pi0 = Inference.expected_pi0(umap, df, elements=elements, dfes=dfes)
+    site_pi = Inference.expected_pi(site_pi0, site_B, mask=mask)
     exp_pi, num_sites = Util.compute_window_averages(out_windows, site_pi)
 
     if args.verbose:
@@ -502,8 +502,8 @@ def predict_B(args):
     B_xs = interf_Bs[-1]
     Bmap = Predict.get_Bmap(xs, B_xs)
     site_B = Bmap(np.arange(L))
-    site_pi0 = Predict.expected_pi0(umap, df, elements=elements, dfes=dfes)
-    site_pi = Predict.expected_pi(site_pi0, site_B, mask=mask)
+    site_pi0 = Inference.expected_pi0(umap, df, elements=elements, dfes=dfes)
+    site_pi = Inference.expected_pi(site_pi0, site_B, mask=mask)
 
     if res == args.spacing:
         foc_B = B_xs

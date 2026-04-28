@@ -160,6 +160,102 @@ def ll(nD, nS, Epi):
     return ll_arr.sum()
 
 
+def expected_pi(pi0, B, mask=None):
+    """
+    Given a pi0 value or array of values, multiply by the per-site diversity
+    reduction to get expected pi after linked selection.
+
+    If mask is given, it is a boolean array with same length as B, with 1/True
+    at sites that should be masked and excluded from likelihood calculation,
+    0/False for sites that should be included.
+    """
+    if not np.isscalar(pi0):
+        if len(pi0) != len(B):
+            raise ValueError("pi0 and B must be the same length")
+    if mask is not None:
+        if len(mask) != len(B):
+            raise ValueError("mask and B must be the same length")
+    else:
+        mask = False
+    return np.ma.masked_array(pi0 * B, mask=mask)
+
+
+def expected_pi0(u, df, L=None, elements=[], dfes=[]):
+    """
+    Get expected pi0, given mutation rates and any elements under selection.
+
+    DFEs are defined with dictionaries, specifying the DFE type and any
+    parameters associated with that DFE.
+
+    :param u: Mutation rate. May be a scalar or an array of site mutation rates.
+    :param df: Lookup table, used to find neutral and deleterious pi0.
+    :param elements: List of arrays specifying starts/ends of constrained
+        elements, corresponding to `dfes`. These are half-open (BED-style).
+        They should specify non-overlapping regions, since overlapping elements
+        will have values set by the last-seen element type in this function.
+    :param dfes: List of DFE parameter dictionaries, specifying distribution
+        type and parameters associated with that DFE. For example, a gamma DFE
+        is defined as
+
+            `{"type": "gamma", "shape": shape, "scale": scale}`.
+
+        A gamma DFE with a proportion of sites being neutral (e.g., gamma for
+        nonsynonymous and neutral for synonymous mutations) would be
+
+            `{"type": "gamma_neutral",
+              "shape": shape,
+              "scale": scale,
+              "p_neu": 1 / (2.31 + 1)}`
+
+        or whatever value `p_neu` should be.
+    """
+    if np.isscalar(u):
+        if L is None:
+            raise ValueError("L must be provided if u is a scalar value")
+        u_arr = u * np.ones(L)
+    else:
+        if L is not None and len(u) != L:
+            raise ValueError("L does not equal length of u")
+        u_arr = 1 * u
+    if len(elements) != len(dfes):
+        raise ValueError("length of dfes does not match length of element sets")
+    if len(set(df["uL"])) != 1:
+        raise ValueError("only a single uL value in the lookup table is allowed")
+
+    # neutral diversity
+    uL = (df[(df["s"] == 0) & (df["r"] == 0)]["uL"]).iloc[0]
+    pi0 = 2 * df[(df["s"] == 0) & (df["r"] == 0)]["Hl"].iloc[0] * u_arr / uL
+
+    for elems, dfe in zip(elements, dfes):
+        # get diversity for uL
+        pi_dfe = _get_pi_dfe(df, dfe)
+        # scale by u_arr
+        pi_arr = pi_dfe * u_arr / uL
+        # fill in pi0 for each element
+        for e in elems:
+            pi0[e[0] : e[1]] = pi_arr[e[0] : e[1]]
+
+    return pi0
+
+
+def _get_pi_dfe(df, dfe):
+    """
+    Compute pi0 for a given `dfe` by using discretized DFE weights to integrate
+    across `Hl` values in a lookup table `df`.
+
+    :param df: Lookup table
+    :param dfe: DFE parameter dictionary
+    :returns: Scalar expected pi0
+    """
+    df_sub = df[df["r"] == 0]
+    ss = np.sort(df_sub["s"])
+    assert ss[-1] == 0
+    weights = Util.get_dfe_weights(ss, dfe)
+    Hls = 2 * np.array([df_sub[df_sub["s"] == s]["Hl"].iloc[0] for s in ss])
+    pi_dfe = np.sum(Hls * weights)
+    return pi_dfe
+
+
 def load_mask(mask_fname, L=None):
     """
     A mask can be provided as a fasta file or a bed file. File type is checked

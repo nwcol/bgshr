@@ -5,7 +5,6 @@ import warnings
 from scipy import interpolate
 import copy
 import pandas
-from multiprocessing import Pool
 
 from . import Util, ClassicBGS, Predict
 
@@ -26,7 +25,7 @@ def Bvals(
     L=None,
     rmap=None,
     r=None,
-    Bmap=None,
+    bmap=None,
     elements=[],
     max_r=0.1,
     r_dists=None
@@ -59,10 +58,10 @@ def Bvals(
             r = 1e-8
         rmap = Util.build_uniform_rmap(r, L)
 
-    # Apply interference correction if Bmap is provided
-    if Bmap is not None:
-        B_elem = _get_B_per_element(Bmap, elements)
-        rmap = Util.adjust_recombination_map(rmap, Bmap)
+    # Apply interference correction if bmap is provided
+    if bmap is not None:
+        B_elem = _get_B_per_element(bmap, elements)
+        rmap = Util.adjust_recombination_map(rmap, bmap)
     else:
         B_elem = np.ones(len(elements))
 
@@ -87,8 +86,7 @@ def Bvals(
     if len(elements) > 0:
         if r_dists is None:
             # recombination distances between each position in xs and element midpoint
-            # r_dists = _get_r_dists(xs, elements, rmap)
-            r_dists = _get_distances(xs, elements, rmap)
+            r_dists = _get_r_dists(xs, elements, rmap)
 
         for j, s_val in enumerate(all_s):
             if s_val == 0:
@@ -144,6 +142,70 @@ def Bvals(
         return Bs
 
 
+def _get_B_per_element(bmap, elements):
+    """
+    Computes the average B-value across each interval in `elements`.
+
+    :param bmap: Scipy cubic splines function
+    :param elements: Array of element start/end positions
+
+    :returns: Array of element-specific average B-values
+    """
+    if bmap is None:
+        # without bmap, correction factor is 1
+        B_elem = np.ones(len(elements))
+    else:
+        # average B in each element
+        B_elem = np.array(
+            [bmap.integrate(e[0], e[1]) / (e[1] - e[0]) for e in elements]
+        )
+    return B_elem
+
+
+def _get_element_midpoints(elements):
+    return np.mean(elements, axis=1)
+
+
+def _get_r_dists(xs, elements, rmap):
+    """
+    Computes a matrix of recombination distances between focal sites `xs`
+    and constrained elements `elements`.
+
+    :param xs: Array of focal sites
+    :param elements: Array of element start/end positions
+    :param rmap: Recombination map function
+
+    :returns: Array of distances with shape (len(elements), len(xs))
+    """
+    x_midpoints = np.mean(elements, axis=1)
+    r_midpoints = rmap(x_midpoints)
+    r_xs = rmap(xs)
+    r_dist = Util.haldane_map_function(
+        np.abs(r_xs[None, :] - r_midpoints[:, None]))
+    return r_dists
+
+
+def _get_interpolated_svals(s_elem, s_vals):
+    """
+    Computes the nearest elements in the s-grid `s_vals` for an arbitrary
+    selection coefficient `s_elem`, and weights determined by its proximity to
+    each grid point.
+
+    For use in the interference correction.
+
+    :param s_elem: Scalar target s-coefficient
+    :param s_vals: Array of grid s-coefficients
+
+    :returns: Nearest values in the s-grid and corresponding weights
+    """
+    s0 = s_vals[np.where(s_elem > s_vals)[0][-1]]
+    s1 = s_vals[np.where(s_elem <= s_vals)[0][0]]
+    p1 = (s_elem - s0) / (s1 - s0)
+    p0 = 1 - p1
+    assert 0 < p0 < 1
+    return s0, s1, p0, p1
+
+
 def Bvals_dfe(
     xs,
     splines,
@@ -159,7 +221,8 @@ def Bvals_dfe(
     Bmap=None
 ):
     """
-    Integrate across a DFE.
+    Computes B-values using `Bvals` and integrates them across a DFE.
+    TODO document
     """
     if ss is None:
         ss = np.sort(list(set([k[1] for k in splines.keys()])))
@@ -247,7 +310,7 @@ def interference_Bvals(
     verbose=False
 ):
     """
-    Predict B with several rounds of interference correction. Returns B-arrays
+    Predicts B with several rounds of interference correction. Returns B-arrays
     from each round of correction and uses `Bvals_fast`.
     """
     if B_unlinked is None:
@@ -447,45 +510,11 @@ def Bvals_fast(
     return Bs_out
 
 
-# B-prediction utilities
-
-
-def _get_B_per_element(bmap, elements):
-    if bmap is None:
-        # without bmap, correction factor is 1
-        B_elem = np.ones(len(elements))
-    else:
-        # average B in each element
-        B_elem = np.array(
-            [bmap.integrate(e[0], e[1]) / (e[1] - e[0]) for e in elements]
-        )
-    return B_elem
-
-
-def _get_element_midpoints(elements):
-    return np.mean(elements, axis=1)
-
-
-def _get_r_dists(xs, elements, rmap):
-    """
-    Compute a matrix of recombination distances between focal neutral sites `xs`
-    and constrained elements `elements`.
-
-    The returned array has shape (len(elements), len(xs)).
-    """
-    x_midpoints = np.mean(elements, axis=1)
-    r_midpoints = rmap(x_midpoints)
-    r_xs = rmap(xs)
-    r_dist = Util.haldane_map_function(
-        np.abs(r_xs[None, :] - r_midpoints[:, None]))
-    return r_dists
-
-
 def _interpolate_Bs(xs, s_elems, s_vals, distances, splines):
     """
 
-    """
 
+    """
     # Retrieve uL
     uLs = np.sort(list(set([k[0] for k in splines.keys()])))
     assert len(uLs) == 1
@@ -500,25 +529,17 @@ def _interpolate_Bs(xs, s_elems, s_vals, distances, splines):
     return unit_Bs
 
 
-def _get_interpolated_svals(s_elem, s_vals):
-    """
-    """
-    s0 = s_vals[np.where(s_elem > s_vals)[0][-1]]
-    s1 = s_vals[np.where(s_elem <= s_vals)[0][0]]
-    p1 = (s_elem - s0) / (s1 - s0)
-    p0 = 1 - p1
-    assert 0 < p0 < 1
-    return s0, s1, p0, p1
-
 
 def _get_distances(xs, windows, rmap):
     """
+    Computes map distances between sites `xs` and the centers of `windows`.
     """
     return np.abs(_get_signed_distances(xs, windows, rmap))
 
 
 def _get_signed_distances(xs, windows, rmap):
     """
+    Computes signed map distances between `xs` and `windows`.
     """
     window_mids = np.mean(windows, axis=1)
     window_map = rmap(window_mids)
@@ -532,107 +553,9 @@ def _get_signed_distances(xs, windows, rmap):
 
 def adjust_mutation_arrays(U_arrs, windows, Bmap):
     """
+    Adjusts local deleterious mutation rate arrays recorded in a list `U_arrs`
+    by local B-values, computed using `windows` and `Bmap`.
     """
     window_Bs = _get_B_per_element(Bmap, windows)
     adjusted_U_arrs = [Us * window_Bs for Us in U_arrs]
     return adjusted_U_arrs
-
-
-# Computing expected pi and pi0
-
-
-def expected_pi(pi0, B, mask=None):
-    """
-    Given a pi0 value or array of values, multiply by the per-site diversity
-    reduction to get expected pi after linked selection.
-
-    If mask is given, it is a boolean array with same length as B, with 1/True
-    at sites that should be masked and excluded from likelihood calculation,
-    0/False for sites that should be included.
-
-    """
-    if not np.isscalar(pi0):
-        if len(pi0) != len(B):
-            raise ValueError("pi0 and B must be the same length")
-    if mask is not None:
-        if len(mask) != len(B):
-            raise ValueError("mask and B must be the same length")
-    else:
-        mask = False
-    return np.ma.masked_array(pi0 * B, mask=mask)
-
-
-def expected_pi0(u, df, L=None, elements=[], dfes=[]):
-    """
-    Get expected pi0, given mutation rates and any elements under selection.
-
-    DFEs are defined with dictionaries, specifying the DFE type and any
-    parameters associated with that DFE.
-
-    :param u: Mutation rate. May be a scalar or an array of site mutation rates.
-    :param df: Lookup table, used to find neutral and deleterious pi0.
-    :param elements: List of arrays specifying starts/ends of constrained
-        elements, corresponding to `dfes`. These are half-open (BED-style).
-        They should specify non-overlapping regions, since overlapping elements
-        will have values set by the last-seen element type in this function.
-    :param dfes: List of DFE parameter dictionaries, specifying distribution
-        type and parameters associated with that DFE. For example, a gamma DFE
-        is defined as
-
-            `{"type": "gamma", "shape": shape, "scale": scale}`.
-
-        A gamma DFE with a proportion of sites being neutral (e.g., gamma for
-        nonsynonymous and neutral for synonymous mutations) would be
-
-            `{"type": "gamma_neutral",
-              "shape": shape,
-              "scale": scale,
-              "p_neu": 1 / (2.31 + 1)}`
-
-        or whatever value `p_neu` should be.
-    """
-    if np.isscalar(u):
-        if L is None:
-            raise ValueError("L must be provided if u is a scalar value")
-        u_arr = u * np.ones(L)
-    else:
-        if L is not None and len(u) != L:
-            raise ValueError("L does not equal length of u")
-        u_arr = 1 * u
-    if len(elements) != len(dfes):
-        raise ValueError("length of dfes does not match length of element sets")
-    if len(set(df["uL"])) != 1:
-        raise ValueError("only a single uL value in the lookup table is allowed")
-
-    # neutral diversity
-    uL = (df[(df["s"] == 0) & (df["r"] == 0)]["uL"]).iloc[0]
-    pi0 = 2 * df[(df["s"] == 0) & (df["r"] == 0)]["Hl"].iloc[0] * u_arr / uL
-
-    for elems, dfe in zip(elements, dfes):
-        # get diversity for uL
-        pi_dfe = _get_pi_dfe(df, dfe)
-        # scale by u_arr
-        pi_arr = pi_dfe * u_arr / uL
-        # fill in pi0 for each element
-        for e in elems:
-            pi0[e[0] : e[1]] = pi_arr[e[0] : e[1]]
-
-    return pi0
-
-
-def _get_pi_dfe(df, dfe):
-    """
-    Compute pi0 for a given `dfe` by using discretized DFE weights to integrate
-    across `Hl` values in a lookup table `df`.
-
-    :param df: Lookup table
-    :param dfe: DFE parameter dictionary
-    :returns: Scalar expected pi0
-    """
-    df_sub = df[df["r"] == 0]
-    ss = np.sort(df_sub["s"])
-    assert ss[-1] == 0
-    weights = Util.get_dfe_weights(ss, dfe)
-    Hls = 2 * np.array([df_sub[df_sub["s"] == s]["Hl"].iloc[0] for s in ss])
-    pi_dfe = np.sum(Hls * weights)
-    return pi_dfe
