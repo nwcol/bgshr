@@ -416,7 +416,7 @@ def Bvals_fast(
             if s == 0:
                 continue
 
-            # Find first/last windows to consider
+            # Find the first/last windows to consider, given s and `max_dists`
             max_dist = max_dists[i]
             dists_below = _get_signed_distances(xs[0], windows, rmap)
             lower_lim = np.searchsorted(dists_below, -max_dist)

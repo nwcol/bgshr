@@ -269,9 +269,9 @@ def unlinked_CBGS(U, dfe, ss=None, grid_size=500):
 
     weights = Util.get_dfe_weights(ss, dfe)
     # Consider only s lower than -1 / min(Ns)
-    min_s = -1 / np.min(Ns)
-    ss_to_use = ss[ss < min_s]
-    weights_to_use = weights[ss < min_s]
+    # min_s = -0.001
+    ss_to_use = ss # ss[ss < min_s]
+    weights_to_use = weights # weights[ss < min_s]
     unlinked_Bs = unlinked_reduction_CBGS(ss_to_use, U)
     unlinked_B = Util.integrate_with_weights(unlinked_Bs, weights_to_use)
     return unlinked_B

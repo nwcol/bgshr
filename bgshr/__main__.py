@@ -10,6 +10,16 @@ from bgshr import Util, ClassicBGS, Predict, Inference
 
 
 class Command():
+    """
+    The hierarchy of command classes is:
+
+    Command
+        CommonCommand
+            ComputePiCommand
+            CommonPredictCommand
+                PredictBCommand
+                FitNeCommand
+    """
 
     def __init__(self, subparsers, subcommand):
         self.parser = subparsers.add_parser(subcommand)
@@ -17,10 +27,13 @@ class Command():
 
 
 class CommonCommand(Command):
-    # These commands are common to prediction/fitting functions
+    """
+    Arguments shared by commands that compute pi and/or B.
+    """
 
     def __init__(self, subparsers, subcommand):
         super().__init__(subparsers, subcommand)
+        # TODO implement file-based DFE spec.
         #self.parser.add_argument(
         #    "-d",
         #    "--dfes",
@@ -65,31 +78,6 @@ class CommonCommand(Command):
             help=""
         )
         self.parser.add_argument(
-            "--rmap",
-            type=str, 
-            default=None,
-            help="path to recombination map file (.bedgraph, .csv or .txt)"
-        )
-        self.parser.add_argument(
-            "--rmap_pos_col",
-            type=str, 
-            default="Position(bp)",
-            help="recombination map position column (default 'Position(bp)')"
-        )
-        self.parser.add_argument(
-            "--rmap_rate_col",
-            type=str,         
-            default="Rate(cM/Mb)",
-            help="recombination map rate column (default 'Rate(cM/Mb)')"
-        )
-        self.parser.add_argument(
-            "-r",
-            "--rec_rate",
-            type=float, 
-            default=None,
-            help="uniform recombination rate"
-        )
-        self.parser.add_argument(
             "-L",
             "--L",
             type=int,
@@ -116,53 +104,16 @@ class CommonCommand(Command):
             help="uniform mutation rate"
         )
         self.parser.add_argument(
-            "-c",
-            "--n_corrs",
-            type=int, 
-            default=0,
-            help="number of interference corrections to perform (default 0)"
-        )
-        self.parser.add_argument(
-            "--save_corrs",
-            action="store_true",
-            help="retain each interference correction in output file"
-        )
-        self.parser.add_argument(
-            "--spacing", 
-            type=int,
-            default=1000,
-            help="spacing between focal sites for B prediction (default 1000)"
-        )
-        self.parser.add_argument(
-            "--window_size",
-            type=int,
-            default=1000,
-            help="window size for aggregating constrained sites (default 1000)"
+            "--mask",
+            type=str,
+            default=None,
+            help="genomic mask for filtering expected diversity"
         )
         self.parser.add_argument(
             "--resolution",
             type=int,
             default=None,
             help="window size of output table (defaults to spacing)"
-        )
-        self.parser.add_argument(
-            "-n",
-            "--n_cores",
-            type=int,
-            default=1,
-            help=""
-        )
-        self.parser.add_argument(
-            "--chunk_size",
-            type=int,
-            default=100,
-            help=""
-        )
-        self.parser.add_argument(
-            "--B_unlinked",
-            type=float,
-            default=None,
-            help=""
         )
         self.parser.add_argument(
             "--cbgs_start",
@@ -196,29 +147,121 @@ class CommonCommand(Command):
         )
 
 
-class PredictCommand(CommonCommand):
+class ComputePiCommand(CommonCommand):
 
     def __init__(self, subparsers):
-        super().__init__(subparsers, "predict")
+        super().__init__(subparsers, "compute_pi")
+        self.parser.add_argument(
+            "-B",
+            "--Bmap",
+            type=str,
+            required=True,
+            help="path to input B-map file (.csv)"
+        )
         self.parser.add_argument(
             "--Ne",
             type=float,
             default=None,
             help="effective population size parameter"
         )
+
+    def __call__(self, args):
+        compute_pi(args)
+
+
+class CommonPredictCommand(CommonCommand):
+    """
+    Arguments shared by commands that predict B.
+    """
+
+    def __init__(self, subparsers, subcommand):
+        super().__init__(subparsers, subcommand)
         self.parser.add_argument(
-            "--mask",
+            "--rmap",
             type=str,
             default=None,
-            help="genomic mask for filtering expected diversity"
+            help="path to recombination map file (.bedgraph, .csv or .txt)"
+        )
+        self.parser.add_argument(
+            "--rmap_pos_col",
+            type=str,
+            default="Position(bp)",
+            help="recombination map position column (default 'Position(bp)')"
+        )
+        self.parser.add_argument(
+            "--rmap_rate_col",
+            type=str,
+            default="Rate(cM/Mb)",
+            help="recombination map rate column (default 'Rate(cM/Mb)')"
+        )
+        self.parser.add_argument(
+            "-r",
+            "--rec_rate",
+            type=float,
+            default=None,
+            help="uniform recombination rate"
+        )
+        self.parser.add_argument(
+            "-n",
+            "--n_cores",
+            type=int,
+            default=1,
+            help=""
+        )
+        self.parser.add_argument(
+            "--chunk_size",
+            type=int,
+            default=100,
+            help=""
+        )
+        self.parser.add_argument(
+            "--B_unlinked",
+            type=float,
+            default=None,
+            help=""
+        )
+        self.parser.add_argument(
+            "-c",
+            "--n_corrs",
+            type=int,
+            default=0,
+            help="number of interference corrections to perform (default 0)"
+        )
+        self.parser.add_argument(
+            "--save_corrs",
+            action="store_true",
+            help="retain each interference correction in output file"
+        )
+        self.parser.add_argument(
+            "--spacing",
+            type=int,
+            default=1000,
+            help="spacing between focal sites for B prediction (default 1000)"
+        )
+        self.parser.add_argument(
+            "--window_size",
+            type=int,
+            default=1000,
+            help="window size for aggregating constrained sites (default 1000)"
         )
 
 
+class PredictBCommand(CommonPredictCommand):
+
+    def __init__(self, subparsers):
+        super().__init__(subparsers, "predict_B")
+        self.parser.add_argument(
+            "--Ne",
+            type=float,
+            default=None,
+            help="effective population size parameter"
+        )
+
     def __call__(self, args):
-        predict(args)
+        predict_B(args)
 
 
-class FitNeCommand(CommonCommand):
+class FitNeCommand(CommonPredictCommand):
 
     def __init__(self, subparsers):
         super().__init__(subparsers, "fit_Ne")
@@ -227,12 +270,6 @@ class FitNeCommand(CommonCommand):
             type=str,
             required=True,
             help="path to .npy file holding site-resolution diversity data"
-        )
-        self.parser.add_argument(
-            "--mask",
-            type=str,
-            required=True,
-            help="genomic mask for filtering expected and observed diversity"
         )
         self.parser.add_argument(
             "--Ne0",
@@ -253,12 +290,131 @@ class FitNeCommand(CommonCommand):
             help="path for output log file (.txt)"
         )
 
-
     def __call__(self, args):
         fit_Ne(args)
 
 
-def predict(args):
+def compute_pi(args):
+    """
+    Loads data and a precomputed B-map, and computes expected pi.
+    """
+
+    if args.verbose:
+        print(Util._get_time(), "loading data")
+
+    # DFE handling
+    dfes = get_dfes(args.shapes, args.scales, args.p_neus)
+
+    # The lookup table is used to find deleterious/neutral expected pi0.
+    df, splines = get_lookup_table(
+        args.lookup_tbl,
+        Ne=args.Ne,
+        n_s_cbgs=args.n_s_cbgs,
+        cbgs_start=args.cbgs_start,
+        verbose=args.verbose)
+
+    # Load mutation rates
+    if args.umap is None and args.L is None:
+        raise ValueError("you must provide either `umap` or `L`")
+    umap = get_umap(args.umap, args.umap_rate_col, args.mut_rate, args.L)
+
+    if args.L is not None:
+        L = args.L
+    else:
+        L = len(umap)
+
+    # Load elements
+    elements = [Util.read_bedfile(f) for f in args.bed]
+    elements = Util.resolve_elements(elements, L=L, verbose=args.verbose)
+
+    # Optionally load a genetic mask to filter expected pi
+    # TODO masking verbosity
+    if args.mask:
+        mask_regions, chrom_num = Util.read_bedfile(args.mask, get_chrom=True)
+        mask = Util.elements_to_mask(mask_regions, L=L)
+    # Otherwise, mask sites where the mutation map lacks data
+    else:
+        chrom_num = None
+        mask = umap.mask
+
+    # Load input B-map table
+    B_df = pandas.read_csv(args.Bmap)
+    in_windows = np.stack([B_df[B_df.columns[1]], B_df[B_df.columns[2]]], 1)
+    in_Bs = np.array(B_df["B"])
+    # Find focal sites and build the B interpolation function
+    in_xs = (in_windows[:, 1] + in_windows[:, 0]) / 2
+    Bmap = Predict.get_Bmap(in_xs, in_Bs)
+
+    if args.verbose:
+        print(Util._get_time(), "loaded data")
+
+    # Set up focal sites and windows for binning output data
+    if args.resolution is None:
+        # Use input windows
+        res = in_windows[0, 1] - in_windows[0, 0]
+        out_windows = in_windows
+        foc_Bs = in_Bs
+        avg_rec = np.array(B_df["avg_rec"])
+    else:
+        res = args.resolution
+        out_windows = np.stack([np.arange(0, L - res, res),
+            np.arange(res, L, res)], axis=1, dtype=np.int64)
+        xs = (out_windows[:, 1] + out_windows[:, 0]) / 2
+        foc_Bs = Bmap(xs)
+        # TODO less lazy implementation
+        avg_rec = [0] * len(out_windows)
+
+    # Compute expected diversity
+    site_B = Bmap(np.arange(L))
+    site_pi0 = Predict.expected_pi0(umap, df, elements=elements, dfes=dfes)
+    site_pi = Predict.expected_pi(site_pi0, site_B, mask=mask)
+    exp_pi, num_sites = Util.compute_window_averages(out_windows, site_pi)
+
+    if args.verbose:
+        print(Util._get_time(), "computed expected pi")
+
+    # Find the chromosome number
+    if chrom_num is None:
+        bed_tbl = pandas.read_csv(args.bed[0], sep="\\s+")
+        chrom_num = next(iter(bed_tbl[bed_tbl.columns[0]]))
+
+    # Calculate other quantities of interest
+    comb_elements = Util.combine_elements(elements)
+    element_mask = Util.elements_to_mask(comb_elements, L=L)
+    # Re-mask `site_pi` to retain only selectively constrained sites
+    del_sites_mask = np.logical_or(mask, element_mask)
+    site_pi.mask = del_sites_mask
+    exp_del_pi, del_sites = Util.compute_window_averages(out_windows, site_pi)
+
+    umap.mask = mask
+    avg_mut, _ = Util.compute_window_averages(out_windows, umap)
+    umap.mask = del_sites_mask
+    del_mut, _ = Util.compute_window_averages(out_windows, umap)
+
+    if args.verbose:
+        print(Util._get_time(), "computed other maps")
+
+    data = {
+        "chrom": [chrom_num] * len(out_windows),
+        "chromStart": out_windows[:, 0],
+        "chromEnd": out_windows[:, 1],
+        "num_sites": num_sites,
+        "del_sites": del_sites,
+        "avg_mut": avg_mut,
+        "del_mut": del_mut,
+        "exp_pi": exp_pi,
+        "exp_del_pi": exp_del_pi,
+        "B": foc_Bs}
+
+    output = pandas.DataFrame(data)
+    output.to_csv(args.out, index=False)
+
+    if args.verbose:
+        print(Util._get_time(), "saved output")
+    return
+
+
+def predict_B(args):
     """
     Loads data and computes expected B and pi.
 
@@ -280,7 +436,7 @@ def predict(args):
 
     # Load mutation rates
     if args.umap is None and args.L is None:
-        raise Valuerror("you must provide either `umap` or `L`")
+        raise ValueError("you must provide either `umap` or `L`")
     umap = get_umap(args.umap, args.umap_rate_col, args.mut_rate, args.L)
 
     if args.L is not None:
@@ -432,7 +588,7 @@ def fit_Ne(args):
 
     # Load mutation rates
     if args.umap is None and args.L is None:
-        raise Valuerror("you must provide either `umap` or `L`")
+        raise ValueError("you must provide either `umap` or `L`")
     umap = get_umap(args.umap, args.umap_rate_col, args.mut_rate, args.L)
 
     if args.L is not None:
@@ -669,7 +825,8 @@ def main():
     parser = argparse.ArgumentParser(prog="bgshr")
     subparsers = parser.add_subparsers(dest="subcommand")
     # Subcommands
-    PredictCommand(subparsers)
+    ComputePiCommand(subparsers)
+    PredictBCommand(subparsers)
     FitNeCommand(subparsers)
     args = parser.parse_args()
     if args.subcommand is None:
