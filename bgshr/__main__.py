@@ -402,6 +402,7 @@ def compute_pi(args):
         "del_sites": del_sites,
         "avg_mut": avg_mut,
         "del_mut": del_mut,
+        "avg_rec": avg_rec,
         "exp_pi": exp_pi,
         "exp_del_pi": exp_del_pi,
         "B": foc_Bs}

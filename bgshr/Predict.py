@@ -28,7 +28,8 @@ def Bvals(
     bmap=None,
     elements=[],
     max_r=0.1,
-    r_dists=None
+    r_dists=None,
+    B_elem=None
 ):
     """
     Get predicted reduction for given s-value, assuming a constant per-base
@@ -60,10 +61,12 @@ def Bvals(
 
     # Apply interference correction if bmap is provided
     if bmap is not None:
-        B_elem = _get_B_per_element(bmap, elements)
+        if B_elem is None:
+            B_elem = _get_B_per_element(bmap, elements)
         rmap = Util.adjust_recombination_map(rmap, bmap)
     else:
-        B_elem = np.ones(len(elements))
+        if B_elem is None:
+            B_elem = np.ones(len(elements))
 
     ## TODO: pull the rec map adjustment back inside this function, since
     ## recursive calls should not recompute distances from the rec map
@@ -182,7 +185,7 @@ def _get_r_dists(xs, elements, rmap):
     r_xs = rmap(xs)
     r_dist = Util.haldane_map_function(
         np.abs(r_xs[None, :] - r_midpoints[:, None]))
-    return r_dists
+    return r_dist
 
 
 def _get_interpolated_svals(s_elem, s_vals):
@@ -215,7 +218,7 @@ def Bvals_dfe(
     rmap=None,
     r=None,
     elements=[],
-    max_dist=0.1,
+    max_r=0.1,
     r_dists=None,
     dfe=None,
     Bmap=None
@@ -236,8 +239,8 @@ def Bvals_dfe(
         rmap=rmap,
         r=r,
         elements=elements,
-        max_r=max_dist,
-        Bmap=Bmap
+        max_r=max_r,
+        bmap=Bmap
     )
 
     if dfe is not None:
@@ -508,6 +511,7 @@ def Bvals_fast(
             Bs_out = Bs
 
     return Bs_out
+
 
 
 def _interpolate_Bs(xs, s_elems, s_vals, distances, splines):

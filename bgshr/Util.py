@@ -995,12 +995,29 @@ def scale_genome_table(df, scale):
     Scales a table with genomic information, `df`, to a coarser resolution
     (larger window sizes).
 
+    Tables must have these columns:
+        chrom
+        chromStart or start
+        chromEnd or end
+
+    If `num_sites` is present, then most quantities (with exceptions given
+    below) are weighted by the number of sites in each original window. If
+    it is not present, then simple averages are taken.
+
+    For the fields `del_mut` and `exp_del_pi`, there must be a `del_sites`
+    column in `df` for a weighted average to be computed. Otherwise, an error
+    will be raised. The same holds for `neu_mut` and `exp_neu_mut` in relation
+    to `neu_sites`.
+
+    If `num_sites` is present, then for coarse windows with no data (`num_sites`
+    equals zero), all average quantities equal np.nan and counts are zero.
+
     :param df: Table with window starts/ends and window information.
         Intervals need not all be of the same size, but they must all be
         divisible by the target `scale`.
-        TODO list the columns expected/supported
     :param scale: Target resolution.
     """
+    scale = int(scale)
 
     def get_avg(vals):
         if len(vals) == 0:
@@ -1038,14 +1055,6 @@ def scale_genome_table(df, scale):
     windows1 = np.stack((np.arange(0, L, scale, dtype=np.int64),
         np.arange(scale, L + scale, scale, dtype=np.int64)), axis=1)
 
-    # Drop intervals in `windows1` without any sites in them
-    # test = np.unique(np.searchsorted(windows1[:, 1], windows0[:, 1]))
-    # keep = np.zeros(len(windows1), bool)
-    # for i in range(len(windows1)):
-    #    if i in test:
-    #        keep[i] = True
-    # windows1 = windows1[keep]
-
     # Find the index in `windows1` that corresponds to each `windows0`
     mapping = np.searchsorted(windows1[:, 1], windows0[:, 1])
     idxs = list(range(len(windows1)))
@@ -1056,42 +1065,34 @@ def scale_genome_table(df, scale):
         "chromStart": windows1[:, 0],
         "chromEnd": windows1[:, 1]}
 
-    # Iterate over fields
+    # Iterate over fields and take weighted averages
     for col in df.columns[3:]:
         arr = np.array(df[col])
-        # Take simple (unweighted) averages of these quantities
-        if col in ["B", "r", "avg_rec"] or col[:2] == "B_":
-            data[col] = np.array([get_avg(arr[mapping == i]) for i in idxs])
 
-        # Take sums of these ones
-        elif col in ["num_sites", "del_sites", "neu_sites"]:
-            data[col] = np.array([np.sum(arr[mapping == i]) for i in idxs])
+        # Sum over site counts
+        if col in ["num_sites", "del_sites", "neu_sites"]:
+            data[col] = [np.sum(arr[mapping == i]) for i in idxs]
 
-        # Take weighted averages of these
-        elif col in ["exp_pi", "avg_pi", "avg_mut"]:
-            assert "num_sites" in df
-            num_sites = np.array(df["num_sites"])
-            data[col] = np.array(
-                [weighted_avg(arr[mapping == i], num_sites[mapping == i])
-                 for i in idxs])
-
-        elif col in ["exp_del_pi", "del_mut"]:
+        elif col in ["del_mut", "exp_del_pi"]:
             assert "del_sites" in df
-            del_sites = np.array(df["del_sites"])
-            data[col] = np.array(
-                [weighted_avg(arr[mapping == i], del_sites[mapping == i])
-                 for i in idxs])
+            weights = np.array(df["del_sites"])
+            data[col] = [weighted_avg(arr[mapping == i], weights[mapping == i])
+                for i in idxs]
 
-        elif col in ["exp_neu_pi", "neu_mut"]:
+        elif col in ["neu_mut", "exp_neu_pi"]:
             assert "neu_sites" in df
-            neu_sites = np.array(df["neu_sites"])
-            data[col] = np.array(
-                [weighted_avg(arr[mapping == i], neu_sites[mapping == i])
-                 for i in idxs])
+            weights = np.array(df["neu_sites"])
+            data[col] = [weighted_avg(arr[mapping == i], weights[mapping == i])
+                for i in idxs]
 
-        # If unrecognized; just take the simple average
         else:
-            data[col] = np.array([np.mean(arr[mapping == i]) for i in idxs])
+            if "num_sites" in df:
+                weights = np.array(df["num_sites"])
+                data[col] = [weighted_avg(arr[mapping == i],
+                                          weights[mapping == i]) for i in idxs]
+            else:
+                warnings.warn("num_sites is not present: taking simple avg")
+                data[col] = [get_avg(arr[mapping == i]) for i in idxs]
 
     df_out = pandas.DataFrame(data)
     return df_out
