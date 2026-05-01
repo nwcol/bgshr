@@ -229,11 +229,15 @@ def expected_pi0(u, df, L=None, elements=[], dfes=[]):
     for elems, dfe in zip(elements, dfes):
         # get diversity for uL
         pi_dfe = _get_pi_dfe(df, dfe)
-        # scale by u_arr
-        pi_arr = pi_dfe * u_arr / uL
-        # fill in pi0 for each element
-        for e in elems:
-            pi0[e[0] : e[1]] = pi_arr[e[0] : e[1]]
+        ## scale by u_arr
+        #pi_arr = pi_dfe * u_arr / uL
+        ## fill in pi0 for each element
+        #for e in elems:
+        #    pi0[e[0] : e[1]] = pi_arr[e[0] : e[1]]
+
+        # convert elements to a mask array
+        where_elems = ~Util.elements_to_mask(elems, L=len(u_arr))
+        pi0[where_elems] = pi_dfe * u_arr[where_elems] / uL
 
     return pi0
 
