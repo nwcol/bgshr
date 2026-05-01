@@ -566,6 +566,22 @@ def compute_element_mutation_rates(elements, u_arr, fill_val="mean"):
     return element_u
 
 
+def split_mutation_windows(windows, U_arrs):
+    """
+    Makes inputs to `Bvals_fast` comport to `Bvals_dfes`.
+    """
+    all_elements = []
+    avg_u_arrs = []
+    for U_arr in U_arrs:
+        keep = np.where(U_arr > 0)[0]
+        elements = windows[keep]
+        all_elements.append(elements)
+        n_sites = elements[:, 1] - elements[:, 0]
+        avg_u = U_arr[keep] / n_sites
+        avg_u_arrs.append(avg_u)
+    return all_elements, avg_u_arrs
+
+
 def load_mutation_arrays(
     mut_fname,
     annot_fnames,

@@ -57,6 +57,63 @@ class CommonCommand(Command):
             help="path to lookup table file (.csv)"
         )
         self.parser.add_argument(
+            "--rmap",
+            type=str,
+            default=None,
+            help="path to recombination map file (.bedgraph, .csv or .txt)"
+        )
+        self.parser.add_argument(
+            "--rmap_pos_col",
+            type=str,
+            default="Position(bp)",
+            help="recombination map position column (default 'Position(bp)')"
+        )
+        self.parser.add_argument(
+            "--rmap_rate_col",
+            type=str,
+            default="Rate(cM/Mb)",
+            help="recombination map rate column (default 'Rate(cM/Mb)')"
+        )
+        self.parser.add_argument(
+            "-r",
+            "--rec_rate",
+            type=float,
+            default=None,
+            help="uniform recombination rate"
+        )
+        self.parser.add_argument(
+            "-L",
+            "--L",
+            type=int,
+            default=None,
+            help="chromosome length (defaults to XXXX)"
+        )
+        self.parser.add_argument(
+            "--umap",
+            type=str,
+            default=None,
+            help="mutation map file (.bedgraph, .csv, .txt or .npy)"
+        )
+        self.parser.add_argument(
+            "--umap_rate_col",
+            type=str,
+            default="rate",
+            help="mutation map rate column (default 'rate')"
+        )
+        self.parser.add_argument(
+            "-u",
+            "--mut_rate",
+            type=float,
+            default=None,
+            help="uniform mutation rate"
+        )
+        self.parser.add_argument(
+            "--mask",
+            type=str,
+            default=None,
+            help="genomic mask for filtering expected diversity"
+        )
+        self.parser.add_argument(
             "--shapes",
             type=float,
             required=True,
@@ -76,38 +133,6 @@ class CommonCommand(Command):
             default=None,
             nargs="*",
             help=""
-        )
-        self.parser.add_argument(
-            "-L",
-            "--L",
-            type=int,
-            default=None,
-            help="chromosome length (defaults to XXXX)"
-        )
-        self.parser.add_argument(
-            "--umap",
-            type=str, 
-            default=None,
-            help="mutation map file (.bedgraph, .csv, .txt or .npy)"
-        )
-        self.parser.add_argument(
-            "--umap_rate_col",
-            type=str,
-            default="rate",
-            help="mutation map rate column (default 'rate')"
-        )
-        self.parser.add_argument(
-            "-u",
-            "--mut_rate",
-            type=float, 
-            default=None,
-            help="uniform mutation rate"
-        )
-        self.parser.add_argument(
-            "--mask",
-            type=str,
-            default=None,
-            help="genomic mask for filtering expected diversity"
         )
         self.parser.add_argument(
             "--resolution",
@@ -176,31 +201,6 @@ class CommonPredictCommand(CommonCommand):
 
     def __init__(self, subparsers, subcommand):
         super().__init__(subparsers, subcommand)
-        self.parser.add_argument(
-            "--rmap",
-            type=str,
-            default=None,
-            help="path to recombination map file (.bedgraph, .csv or .txt)"
-        )
-        self.parser.add_argument(
-            "--rmap_pos_col",
-            type=str,
-            default="Position(bp)",
-            help="recombination map position column (default 'Position(bp)')"
-        )
-        self.parser.add_argument(
-            "--rmap_rate_col",
-            type=str,
-            default="Rate(cM/Mb)",
-            help="recombination map rate column (default 'Rate(cM/Mb)')"
-        )
-        self.parser.add_argument(
-            "-r",
-            "--rec_rate",
-            type=float,
-            default=None,
-            help="uniform recombination rate"
-        )
         self.parser.add_argument(
             "-n",
             "--n_cores",
@@ -354,15 +354,21 @@ def compute_pi(args):
         res = in_windows[0, 1] - in_windows[0, 0]
         out_windows = in_windows
         foc_Bs = in_Bs
-        avg_rec = np.array(B_df["avg_rec"])
+        if "avg_rec" in B_df:
+            avg_rec = np.array(B_df["avg_rec"])
     else:
         res = args.resolution
         out_windows = np.stack([np.arange(0, L - res, res),
             np.arange(res, L, res)], axis=1, dtype=np.int64)
         xs = (out_windows[:, 1] + out_windows[:, 0]) / 2
         foc_Bs = Bmap(xs)
-        # TODO less lazy implementation
-        avg_rec = [0] * len(out_windows)
+        rmap = get_rmap(
+            args.rmap,
+            args.rmap_pos_col,
+            args.rmap_rate_col,
+            args.rec_rate,
+            L=L)
+        avg_rec = Util.compute_average_recombination_rate(out_windows, rmap)
 
     # Compute expected diversity
     site_B = Bmap(np.arange(L))
@@ -450,7 +456,8 @@ def predict_B(args):
         args.rmap,
         args.rmap_pos_col,
         args.rmap_rate_col,
-        args.rec_rate, L)
+        args.rec_rate,
+        L=L)
 
     # Load elements and compute their mutation rates
     elements, windows, U_arrs = get_elements(

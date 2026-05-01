@@ -260,7 +260,7 @@ def Bvals_dfes(
     rmap=None,
     r=None,
     all_elements=[],
-    max_dist=0.1,
+    max_r=0.1,
     Bmap=None,
     dfes=None,
 ):
@@ -289,7 +289,7 @@ def Bvals_dfes(
             rmap=rmap,
             r=r,
             elements=all_elements[i],
-            max_dist=max_dist,
+            max_r=max_r,
             Bmap=Bmap,
             dfe=dfes[i]
         )
@@ -466,15 +466,16 @@ def Bvals_fast(
         # Instantiate B arrays
         Bs = [np.ones((len(ss), len(xs))) for _ in U_arrs]
 
-        # If a fixed maximum distance wasn't given, compute one for each `ss`
-        if max_dist is None:
-            test_dists = np.logspace(-8, 1, 200)
-            max_dists = []
-            for s in ss:
-                idx = np.where(splines[(uL, s)](test_dists) > 1 - 1e-10)[0][0]
-                max_dists.append(test_dists[idx])
-        else:
-            max_dists = [max_dist] * len(ss)
+        # Compute a maximum distance for each s-coefficient
+        test_dists = np.logspace(-8, 1, 200)
+        max_dev = 1e-10
+        max_dists = []
+        for s in ss:
+            idx = np.where(splines[(uL, s)](test_dists) > 1 - max_dev)[0][0]
+            max_dist_s = test_dists[idx]
+            if max_dist is not None:
+                max_dist_s = min(max_dist, max_dist_s)
+            max_dists.append(max_dist_s)
 
         # Loop over s coefficients and constraint categories
         distances = _get_distances(xs, windows, rmap)
@@ -485,20 +486,19 @@ def Bvals_fast(
             # Find the first/last windows to consider, given s and `max_dists`
             max_dist = max_dists[i]
             dists_below = _get_signed_distances(xs[0], windows, rmap)
-            lower_lim = np.searchsorted(dists_below, -max_dist)
+            bound0 = np.searchsorted(dists_below, -max_dist)
             dists_above = _get_signed_distances(xs[-1], windows, rmap)
-            upper_lim = np.searchsorted(dists_above, max_dist)
+            bound1 = np.searchsorted(dists_above, max_dist)
 
             if Bmap is None:
-                unit_Bs = splines[(uL, s)](distances[lower_lim:upper_lim])
+                bvals = splines[(uL, s)](distances[bound0:bound1])
             else:
-                s_windows = s * B_windows[lower_lim:upper_lim]
-                unit_Bs = _interpolate_Bs(
-                    xs, s_windows, ss, distances[lower_lim:upper_lim], splines)
+                s_windows = s * B_windows[bound0:bound1]
+                bvals = _get_interference_bvals(
+                    s_windows, distances[bound0:bound1], splines)
 
             for j, Us in enumerate(U_arrs):
-                Bs[j][i] = np.prod(
-                    unit_Bs ** Us[lower_lim:upper_lim, None], axis=0)
+                Bs[j][i] = np.prod(bvals ** Us[bound0:bound1, None], axis=0)
 
         # Integrate across Bs
         if dfes is not None:
@@ -512,6 +512,52 @@ def Bvals_fast(
 
     return Bs_out
 
+
+def _get_s_indices(s_vals, s_grid):
+    """
+
+    """
+    idx_1 = np.searchsorted(s_grid, s_vals)
+    idx_0 = idx_1 - 1
+    return idx_0, idx_1
+
+
+def _get_s_facs(s_vals, s_grid, idx_0, idx_1):
+
+    grid_vals_1 = s_grid[idx_1]
+    grid_vals_0 = s_grid[idx_0]
+    facs_0 = (grid_vals_1 - s_vals) / (grid_vals_1 - grid_vals_0)
+    facs_1 = 1 - facs_0
+    return facs_0, facs_1
+
+
+def _get_interference_bvals(s_windows, distances, splines):
+    """
+    Computes unit B-values under the interference correction, for a particular
+    s-coefficient.
+
+    :param s_windows: Window selection coefficients; these are B*s, where B is
+        the local B-value from the last round of interference correction, and
+        s is a scalar selection coefficient.
+    :param distances: A precomputed matrix of distances between focal sites
+        and windows, with shape (len(windows), len(xs)), where xs is an array
+        of focal sites.
+    :param splines: Splines for interpolating B-values.
+    """
+    uL = next(iter(splines.keys()))[0]
+    s_grid = np.sort([key[1] for key in splines])
+    idx_0, idx_1 = _get_s_indices(s_windows, s_grid)
+    facs_0, facs_1 = _get_s_facs(s_windows, s_grid, idx_0, idx_1)
+    req_grid_idxs = np.unique([idx_0, idx_1])
+    ret = np.zeros(distances.shape)
+    for idx in req_grid_idxs:
+        # get the spline for this s
+        spline =  splines[(uL, s_grid[idx])]
+        mask = idx_0 == idx
+        ret[mask] += facs_0[mask, None] * spline(distances[mask])
+        mask = idx_1 == idx
+        ret[mask] += facs_1[mask, None] * spline(distances[mask])
+    return ret
 
 
 def _interpolate_Bs(xs, s_elems, s_vals, distances, splines):
@@ -531,7 +577,6 @@ def _interpolate_Bs(xs, s_elems, s_vals, distances, splines):
         fac1 = p1 * splines[(uL, s1)](distances[i])
         unit_Bs[i] = fac0 + fac1
     return unit_Bs
-
 
 
 def _get_distances(xs, windows, rmap):
