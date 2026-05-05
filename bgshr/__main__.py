@@ -5,6 +5,8 @@ Command-line interface
 import argparse
 import numpy as np
 import pandas
+import time
+import scipy
 
 from bgshr import Util, ClassicBGS, Predict, Inference
 
@@ -272,7 +274,7 @@ class FitNeCommand(CommonPredictCommand):
             help="path to .npy file holding site-resolution diversity data"
         )
         self.parser.add_argument(
-            "--Ne0",
+            "--Ne",
             type=float,
             required=True,
             help="initial guess of the effective population size parameter"
@@ -580,7 +582,7 @@ def fit_Ne(args):
     Fits `Ne` to observed data.
     """
 
-    # TODO Fill in. Currently not tested.
+    t0 = time.time()
 
     if args.verbose:
         print(Util._get_time(), "loading data")
@@ -588,11 +590,7 @@ def fit_Ne(args):
     # DFE handling
     dfes = get_dfes(args.shapes, args.scales, args.p_neus)
 
-    df, splines = get_df(
-        args.lookup_tbl,
-        Ne=args.Ne,
-        n_s_cbgs=args.n_s_cbgs,
-        cbgs_start=args.cbgs_start)
+    df = pandas.read_csv(args.lookup_tbl)
 
     # Load mutation rates
     if args.umap is None and args.L is None:
@@ -606,35 +604,46 @@ def fit_Ne(args):
 
     # Load recombination map
     rmap = get_rmap(
-        args.rmap, args.rmap_pos_col, args.rmap_rate_col, args.rec_rate, L)
+        args.rmap,
+        args.rmap_pos_col,
+        args.rmap_rate_col,
+        args.rec_rate,
+        L=L)
 
     # Load elements and compute their mutation rates
-    elements = [Util.load_elements(f) for f in args.bed]
-    elements = Util.resolve_elements(elements, verbose=args.verbose)
-    mean_ss = None # check order and raise warning ...
-    ws = args.window_size
-    windows = np.stack([np.arange(0, L - ws, ws), np.arange(ws, L, ws)], axis=1)
-    U_arrs = [Util.compute_window_mutation_rates(windows, elems, umap)[0]
-              for elems in elements]
-    windows, U_arrs = Util.filter_empty_windows(windows, U_arrs)
+    elements, windows, U_arrs = get_elements(
+        args.bed,
+        umap,
+        L=L,
+        window_size=args.window_size,
+        verbose=args.verbose)
 
     # Optionally load a genetic mask to filter expected pi
+    # TODO masking verbosity
     if args.mask:
-        mask_regions, chrom_num = Util.read_bedfile(args.mask)
+        mask_regions, chrom_num = Util.read_bedfile(args.mask, get_chrom=True)
         mask = Util.elements_to_mask(mask_regions, L=L)
+    # Otherwise, mask sites where the mutation map lacks data
     else:
         chrom_num = None
-        mask = None
+        mask = umap.mask
+
+    # Load and mask diversity data
+    nd, ns = np.load(args.ndns).T
+    ndns = (np.ma.array(nd, mask=mask), np.ma.array(ns, mask=mask))
 
     if args.verbose:
         print(Util._get_time(), "loaded data")
+
+    # Set up focal site array
+    xs = np.arange(args.spacing // 2, L - args.spacing // 2, args.spacing)
 
     opt_args = (
         xs,
         df,
         ndns,
         mask,
-        u_map,
+        umap,
         elements,
         windows,
         U_arrs,
@@ -643,23 +652,68 @@ def fit_Ne(args):
         args.n_corrs,
         args.chunk_size,
         args.n_cores,
-        args.B_unlinked)
+        args.B_unlinked,
+        args.n_s_cbgs,
+        args.cbgs_start,
+        args.verbose)
 
-    params = np.array([Ne_init])
-    opt = optimize.fmin(
+    params = np.array([args.Ne])
+    opt = scipy.optimize.fmin(
         objective_func,
         params,
         args=opt_args,
-        maxiter=maxiter,
-        maxfun=maxiter,
+        maxiter=args.maxiter,
+        maxfun=args.maxiter,
         xtol=10,
-        ftol=1,
+        ftol=5,
         full_output=True)
 
-    # TODO write log file
-    # TODO recover highest-LL maps from cache and save them.
+    # Set up focal sites and windows for binning pi
+    if args.resolution is None:
+        res = args.spacing
+    else:
+        res = args.resolution
 
-    # TODO
+    out_windows = np.stack([np.arange(0, L - res, res),
+        np.arange(res, L, res)], axis=1, dtype=np.int64)
+
+    # Recover maps computed with MLE Ne
+    Ne_opt = opt[0][0]
+    interf_Bs, site_exp_pi = _data_cache[Ne_opt]
+
+    # Interpolate B-values, if `resolution` is different than `spacing`
+    B_xs = interf_Bs[-1]
+    if res == args.spacing:
+        foc_B = B_xs
+    else:
+        Bmap = Predict.get_Bmap(xs, B_xs)
+        midpoints = np.mean(out_windows, axis=1)
+        foc_B = Bmap(midpoints)
+
+    exp_pi, num_sites = Util.compute_window_averages(out_windows, site_exp_pi)
+
+    if args.verbose:
+        print(Util._get_time(), "computed windowed expected pi")
+
+    # Calculate other quantities of interest
+    comb_elements = Util.combine_elements(elements)
+    element_mask = Util.elements_to_mask(comb_elements, L=L)
+    # Re-mask `site_exp_pi` to retain only selectively constrained sites
+    del_sites_mask = np.logical_or(mask, element_mask)
+    site_exp_pi.mask = del_sites_mask
+    exp_del_pi, del_sites = Util.compute_window_averages(
+        out_windows, site_exp_pi)
+
+    umap.mask = mask
+    avg_mut, _ = Util.compute_window_averages(out_windows, umap)
+    umap.mask = del_sites_mask
+    del_mut, _ = Util.compute_window_averages(out_windows, umap)
+    avg_rec = Util.compute_average_recombination_rate(out_windows, rmap)
+
+    if args.verbose:
+        print(Util._get_time(), "computed other maps")
+
+    # Find the chromosome number
     if chrom_num is None:
         bed_tbl = pandas.read_csv(args.bed[0], sep="\\s+")
         chrom_num = next(iter(bed_tbl[bed_tbl.columns[0]]))
@@ -669,7 +723,12 @@ def fit_Ne(args):
         "chromStart": out_windows[:, 0],
         "chromEnd": out_windows[:, 1],
         "num_sites": num_sites,
+        "del_sites": del_sites,
+        "avg_rec": avg_rec,
+        "avg_mut": avg_mut,
+        "del_mut": del_mut,
         "exp_pi": exp_pi,
+        "exp_del_pi": exp_del_pi,
         "B": foc_B}
 
     # Save interference correction rounds
@@ -687,7 +746,126 @@ def fit_Ne(args):
 
     if args.verbose:
         print(Util._get_time(), "saved output")
+
+    # Write log file
+    _, f_opt, n_iters, n_calls, flag = opt
+    with open(args.log_out, "w") as fout:
+        comment = ", ".join([
+            f"#Ne_opt: {Ne_opt}",
+            f"f_opt: {f_opt}",
+            f"n_iters: {n_iters}",
+            f"n_calls: {n_calls}",
+            f"flag: {flag}\n"])
+        fout.write(comment)
+        header = "t\tNe\tll\n"
+        fout.write(header)
+        for i, (t, Ne, ll) in enumerate(_log):
+            line = f"{np.round(t-t0, 3)}\t{Ne}\t{ll}\n"
+            fout.write(line)
+
+    if args.verbose:
+        print(Util._get_time(), "wrote log file")
     return
+
+
+# Functions for fitting Ne
+
+
+_data_cache = {}
+_ll_cache = {}
+_log = []
+
+
+def objective_func(
+    params,
+    xs,
+    df,
+    ndns,
+    mask,
+    umap,
+    elements,
+    windows,
+    U_arrs,
+    rmap,
+    dfes,
+    n_corrs,
+    chunk_size,
+    n_cores,
+    B_unlinked,
+    n_s_cbgs,
+    cbgs_start,
+    verbose
+):
+    """
+    Objective function for Ne optimization.
+    """
+    Ne = params[0]
+
+    if Ne in _ll_cache:
+        return -_ll_cache[Ne]
+
+    # Check geometry
+    L = len(umap)
+    nd, ns = ndns
+    assert len(nd) == L
+
+    # Send lookup table to target Ne
+    df, splines = rebuild_lookup_table(
+        df, Ne, n_s_cbgs=n_s_cbgs, cbgs_start=cbgs_start)
+
+    # Predict B-values
+    interf_Bs = Predict.interference_Bvals(
+        xs,
+        splines,
+        windows=windows,
+        U_arrs=U_arrs,
+        rmap=rmap,
+        dfes=dfes,
+        n_corrs=n_corrs,
+        chunk_size=chunk_size,
+        n_cores=n_cores,
+        B_unlinked=B_unlinked,
+        verbose=verbose)
+
+    # Get expected pi
+    Bmap = Predict.get_Bmap(xs, interf_Bs[-1])
+    site_B = Bmap(np.arange(L))
+    exp_pi0 = Inference.expected_pi0(umap, df, elements=elements, dfes=dfes)
+    exp_pi = Inference.expected_pi(exp_pi0, site_B, mask=mask)
+
+    # Compute likelihood and update caches
+    ll = Inference.ll(nd, ns, exp_pi)
+    _log.append([time.time(), Ne, ll])
+    _ll_cache[Ne] = ll
+    _data_cache[Ne] = (interf_Bs, exp_pi)
+    if verbose:
+        i = len(_log)
+        print(Util._get_time(),
+              f"completed iteration {i} with Ne={Ne:.5}\tll={ll:.5}")
+    return -ll
+
+
+def rebuild_lookup_table(df, Ne, n_s_cbgs=20, cbgs_start=None):
+    """
+    Copies a lookup table and scales it to the appropriate Ne.
+    """
+    df = Util.cap_max_lookup_table_B(df)
+    df = Util.scale_lookup_table(df, Ne)
+    df = Util.fill_in_lookup_table(df)
+    # Extend lookup table with classic BGS
+    min_s = np.min(df["s"])
+    if cbgs_start is None:
+        ss_extend = -np.logspace(0, np.log10(-min_s), n_s_cbgs + 1)[:-1]
+    else:
+        assert cbgs_start < 0
+        # We shouldn't leave gaps between moments++/CBGS s-grids
+        assert min_s <= cbgs_start
+        df = df[df["s"] > cbgs_start]
+        ss_extend = -np.logspace(0, np.log10(-cbgs_start), n_s_cbgs)
+    df = ClassicBGS.extend_lookup_table(df, ss_extend)
+    df = Util.convert_lookup_table_to_morgans(df)
+    splines = Util.generate_linear_splines(df)[2]
+    return df, splines
 
 
 # Helper functions for loading data with variable file type/structure
