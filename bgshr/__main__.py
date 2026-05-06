@@ -845,7 +845,7 @@ def objective_func(
     if verbose:
         i = len(_log) - 1
         print(Util._get_time(),
-              f"completed iteration {i} with Ne={Ne:.5}\tll={ll:.5}")
+              f"completed iteration {i} with Ne={Ne}\tll={ll}")
     return -ll
 
 
