@@ -755,12 +755,16 @@ def fit_Ne(args):
             f"f_opt: {f_opt}",
             f"n_iters: {n_iters}",
             f"n_calls: {n_calls}",
-            f"flag: {flag}\n"])
+            f"flag: {flag}"]) + "\n"
         fout.write(comment)
-        header = "t\tNe\tll\n"
+        header = "\t".join(["call", "runtime", "Ne", "ll"]) + "\n"
         fout.write(header)
         for i, (t, Ne, ll) in enumerate(_log):
-            line = f"{np.round(t-t0, 3)}\t{Ne}\t{ll}\n"
+            line = "\t".join([
+                str(i),
+                str(np.round(t-t0, 3)),
+                str(Ne),
+                str(ll)]) + "\n"
             fout.write(line)
 
     if args.verbose:
@@ -839,7 +843,7 @@ def objective_func(
     _ll_cache[Ne] = ll
     _data_cache[Ne] = (interf_Bs, exp_pi)
     if verbose:
-        i = len(_log)
+        i = len(_log) - 1
         print(Util._get_time(),
               f"completed iteration {i} with Ne={Ne:.5}\tll={ll:.5}")
     return -ll
