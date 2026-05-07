@@ -677,9 +677,11 @@ def fit_Ne(args):
     out_windows = np.stack([np.arange(0, L - res, res),
         np.arange(res, L, res)], axis=1, dtype=np.int64)
 
-    # Recover maps computed with MLE Ne
-    Ne_opt = opt[0][0]
-    interf_Bs, site_exp_pi = _data_cache[Ne_opt]
+    # Recover maps computed with highest-LL Ne
+    interf_Bs, site_exp_pi = _data_cache["data"]
+    Ne_used = _data_cache["Ne"]
+    if args.verbose:
+        print(Util._get_time(), f"emitting maps computed with Ne={Ne_used}")
 
     # Interpolate B-values, if `resolution` is different than `spacing`
     B_xs = interf_Bs[-1]
@@ -748,7 +750,8 @@ def fit_Ne(args):
         print(Util._get_time(), "saved output")
 
     # Write log file
-    _, f_opt, n_iters, n_calls, flag = opt
+    p_opt, f_opt, n_iters, n_calls, flag = opt
+    Ne_opt = p_opt[0]
     with open(args.log_out, "w") as fout:
         comment = ", ".join([
             f"#Ne_opt: {Ne_opt}",
@@ -841,7 +844,15 @@ def objective_func(
     ll = Inference.ll(nd, ns, exp_pi)
     _log.append([time.time(), Ne, ll])
     _ll_cache[Ne] = ll
-    _data_cache[Ne] = (interf_Bs, exp_pi)
+
+    # Replace cached maps if LL is higher than yet seen
+    if len(_data_cache) == 0 or ll > _data_cache["ll"]:
+        _data_cache["ll"] = ll
+        _data_cache["Ne"] = Ne
+        _data_cache["data"] = (interf_Bs, exp_pi)
+        if verbose:
+            print(Util._get_time(), "cached expected maps")
+
     if verbose:
         i = len(_log) - 1
         print(Util._get_time(),
