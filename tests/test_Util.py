@@ -56,17 +56,17 @@ class TestScaleLookupTable(unittest.TestCase):
         self.assertTrue(np.all(df1["r"] < 0.5))
 
 
-class TestExtendLookupTableR(unittest.TestCase):
+class TestFillInLookupTable(unittest.TestCase):
 
     def test_step_spacing(self):
         fname = os.path.join(os.path.dirname(__file__),
             "data/lookup_tbl_one_line_equilibrium.csv")
         df = pandas.read_csv(fname)
-        df1 = bgshr.Util.extend_lookup_table_r(df, n_steps=4)
+        df1 = bgshr.Util.fill_in_lookup_table(df, n_steps=4, max_M=10)
         self.assertTrue(len(df1) == 5)
-        self.assertTrue(len(np.unique(df1["r"])) == 5)
-        self.assertTrue(np.max(df1["r"]) == 0.5)
-        self.assertTrue(np.all(df[df["r"] == 0.5]["B"] == 1))
+        self.assertTrue(len(np.unique(df1["M"])) == 5)
+        self.assertTrue(np.max(df1["M"]) == 10)
+        self.assertTrue(np.all(df[df["M"] == 10]["B"] == 1))
 
 
 class TestConvertLookupTableToMorgans(unittest.TestCase):
@@ -99,7 +99,7 @@ class TestConvertLookupTableToMorgans(unittest.TestCase):
         self.assertTrue(np.all(df1[df1["M"] == max_M]["B"] == 1))
 
 
-def TestWeightsGammaDFE(unittest.TestCase):
+class TestWeightsGammaDFE(unittest.TestCase):
     pass
 
 
@@ -110,3 +110,4 @@ def test_uniform_rmap():
         assert rmap(L) == r * L
         assert rmap(L / 2) == r * L / 2
         assert rmap(0) == 0
+

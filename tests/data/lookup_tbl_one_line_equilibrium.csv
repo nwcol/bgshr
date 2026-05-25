@@ -1,2 +1,2 @@
-r,s,uL,Hr,Order,uR,B,Generation,Hl,Ts,Ns
-0.01,-0.0001,1e-08,0.0001,400,1e-08,0.99,0,0.00005,0,10000
+r,s,uL,Order,Generation,Hr,pi0,B,uR,Hl,piN_pi0,piN_piS,Ns,Ts
+0.01,-0.01,1e-8,0,0,0.000396,0.0004,0.99,1e-8,0.002,0,0,10000,0
