@@ -43,19 +43,19 @@ def extend_lookup_table(df_sub, ss, generation=0):
 def reduction_CBGS(s, u, r, L=1):
     """
     Compute a diversity reduction with classic BGS theory. Valid for `s`
-    where 2N_e*s >> 1.
+    where 2N_e*s << -1.
 
     Derived from Charlesworth (2012) [Appendix], without making the assumption
-    that s and r are small.
+    that s and r are small. Note that here we define the fitness of
+    heterozygote carriers of the deleterious allele as 1+s, so that s < 0.
 
-    :param s: Selection coefficient. Heterozygotes with the deleterious allele
-        have fitness (1+s). Should be < 0.
+    :param s: Selection coefficient. Should be < 0.
     :param u: Deleterious haploid mutation rate.
     :param r: Recombination rate between focal site and constrained locus.
     :param L: Optional scaling factor for the mutation rate. Assumes a non-
         recombining locus of length `L` and average per-base mutation rate `u`.
     """
-    return np.exp(s * u * (1 + (2 * r * (1+s) - s) ** 2) / (r * (1+s) - s) ** 2)
+    return np.exp(s * u * (1 + (2 * r * (1+s) - s)**2) / (r * (1+s) - s)**2)
 
 
 def unlinked_reduction_CBGS(s, u, L=1):
@@ -71,7 +71,7 @@ def unlinked_reduction_CBGS(s, u, L=1):
     :param L: Optional scaling factor for the mutation rate. Assumes a non-
         recombining locus of length `L` and average per-base mutation rate `u`.
     """
-    return np.exp(8 * s * u * L / (1 - s) ** 2)
+    return np.exp(8 * s * u * L / (1 - s)**2)
 
 
 def approx_reduction_CBGS(s, u, r, L=1):
@@ -82,7 +82,8 @@ def approx_reduction_CBGS(s, u, r, L=1):
     Given by Nordborg and Charlesworth (1996) using diffusion and Nordborg
     (1997) using a Markov chain approach.
 
-    :param s: Selection coefficient for the heterozygote.
+    :param s: Selection coefficient for the heterozygote (whose fitness is
+        defined as 1+s; so s < 0).
     :param u: The deleterious haploid mutation rate.
     :param r: The recombination rate between the focal site and the selected
         locus.
@@ -90,7 +91,7 @@ def approx_reduction_CBGS(s, u, r, L=1):
         non-recombining selected locus of length L, and per-base mutation rate
         of `u`.
     """
-    return np.exp(-u * L / (-s * (1 + r * (1 + s) / -s) ** 2))
+    return np.exp(-u * L / (-s * (1 + r * (1 + s) / -s)**2))
 
 
 def classic_BGS(xs, s, u, L=None, rmap=None, elements=[]):
@@ -153,14 +154,14 @@ def extend_lookup_table_1_epoch(df_sub, ss, generation=0):
     for s in ss:
         Bs = reduction_CBGS(s, data["uL"], r_vals)
         data["s"] = s
-    
+
         Nanc = []
         if type(data["Ns"]) is str:
             Nvec = np.unique(np.array(data["Ns"]))[0].split(";")
             Nanc = Nvec[len(Nvec)-1]
         else: # eq. demography and single Ns has been converted
             Nanc = data["Ns"]
-            
+
         data["Hl"] = _get_Hl(s, Nanc, np.unique(data["uL"])[0])
         Hrs = Bs * data["pi0"]
         data["piN_pi0"] = data["Hl"] / data["pi0"]
@@ -530,55 +531,3 @@ def build_lookup_table_n_epoch(
     df_new = pandas.DataFrame(new_data, columns=cols)
     return df_new
 
-
-def unlinked_CBGS_n_epoch(U, dfe, Ts, Ns, ss=None, grid_size=500):
-    """
-    Computes an unlinked B-value for an n-epoch model defined by piecewise-
-    constant effective sizes `Ns` and epochs `Ts`.
-
-    :param U: Scalar deleterious mutation rate of unlinked sites.
-    :param dfe: Dictionary defining DFE parameters. See `Util.get_weights_dfe`.
-    :param Ts: Monotonically increasing epoch boundaries. Should start with 0.
-    :param Ns: Effective sizes for each epoch. `Ns[0]` is the size between
-        time `Ts[0]` and `Ts[1]`, and `Ns[-1]` is the ancestral size.
-    :param ss: Optional grid of selection coefficients. If None (default),
-        constructs a log-spaced grid of size `grid_size`.
-    :param grid_size: Optional number of selection coefficients to use for
-        discretizing the DFE and integrating B (default 500).
-    """
-    # Construct ss grid
-    if ss is None:
-        ss = np.append(-np.logspace(0, -6, grid_size - 1), 0)
-    else:
-        # ss must begin at -1 and increase monotonically
-        assert np.all(np.diff(ss) > 0)
-        assert ss[0] == -1 and ss[-1] == 0
-
-    # Consider only s lower than -1 / min(Ns)
-    min_s = -1 / np.min(Ns)
-    weights = Util.get_dfe_weights(ss, dfe)
-    ss_to_use = ss[ss < min_s]
-    weights_to_use = weights[ss < min_s]
-
-    r = 0.5
-    unlinked_Bs = np.array([reduction_CBGS_n_epoch(
-        Ns, Ts, s, U, r, scale_mutation=True) for s in ss_to_use])
-    unlinked_B = Util.integrate_with_weights(unlinked_Bs, weights_to_use)
-    return unlinked_B
-
-
-def unlinked_CBGS_n_epoch_df(U, dfe, df, ss=None, grid_size=500):
-    """
-    Extracts a demographic model with piecewise size history from a lookup
-    table `df`, then uses it to predict unlinked B.
-
-    :param dfe: Lookup table with n-epoch history.
-    See `unlinked_CBGS_n_epoch` for other arguments.
-    """
-    Ts_str = next(iter(set(df["Ts"])))
-    Ns_str = next(iter(set(df["Ns"])))
-    Ts = [int(float(x)) for x in Ts_str.split(";")]
-    Ns = [int(float(x)) for x in Ns_str.split(";")]
-    unlinked_B = unlinked_CBGS_n_epoch(
-        U, dfe, Ts, Ns, ss=ss, grid_size=grid_size)
-    return unlinked_B

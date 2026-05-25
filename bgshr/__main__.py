@@ -1,5 +1,5 @@
 """
-Command-line interface
+Houses the command-line interface for fitting Ne and predicting B.
 """
 
 import argparse
@@ -175,6 +175,9 @@ class CommonCommand(Command):
 
 
 class ComputePiCommand(CommonCommand):
+    """
+    Arguments for calculating diversity, given a table of precomputed B-values.
+    """
 
     def __init__(self, subparsers):
         super().__init__(subparsers, "compute_pi")
@@ -298,7 +301,9 @@ class FitNeCommand(CommonPredictCommand):
 
 def compute_pi(args):
     """
-    Loads data and a precomputed B-map, and computes expected pi.
+    Load data and a precomputed B-map, then compute expected pi.
+
+    :param args: 
     """
 
     if args.verbose:
@@ -897,9 +902,20 @@ def get_lookup_table(
     Loads a lookup table, optionally scales it, extends it with CBGS, and adds
     a map distance column. Then builds linear splines.
 
-    :returns: Lookup table, dictionary of splines
-    """
+    Note that by convention, the selection coefficient s <= 0.
 
+    :param fname: Path to .csv file containing lookup table.
+    :param Ne: Effective size to rescale the table to (for equilibrium 
+        demographies). Default None skips rescaling.
+    :param n_s_cbgs: Number of s-values to append to the table using classic
+        BGS (CBGS).
+    :param cbgs_start: CBGS predictions are made at s log-spaced between -1 
+        and this quantity. Defaults to the lowest s-value of the input
+        lookup table.
+    :param verbose: If True (default False), prints reports.
+
+    :returns: Pandas dataframe holding lookup table, dictionary of splines
+    """
     # Load lookup table
     df = Util.load_lookup_table(fname)
     df = Util.cap_max_lookup_table_B(df)
@@ -957,12 +973,24 @@ def get_dfes(shapes, scales, p_neus):
 
 def get_umap(fname, rate_col="rate", u=None, L=None):
     """
-    Loads a mutation map, or builds a uniform map if `u` and `L` are given.
+    Load a mutation map, or build a uniform map if `u` and `L` are given.
 
     Maps may be loaded from site-resolution .npy files, or from tables (.csv,
     .tsv, .bedgraph) that assign uniform rates to genomic windows.
 
     Importantly, this function returns a masked array with no nan in it.
+
+    :param fname: Path to mutation rate data file. This may be:
+        - A site-resolution vector saved in a .npy file
+        - A .csv or .tsv file defining windows with uniform mutation rates
+        - None, in which case `u` and `L` are used to cosntruct a uniform map.
+    :param rate_col: If `fname` is a .csv or .tsv table, mutation rates will
+        be loaded from the column with this name (default 'rate').
+    :param u: Uniform mutation rate, used to construct a uniform map if `fname`
+        is None (default None).
+    :param L: Length of uniform mutation map (default None)
+
+    :returns: NumPy array holding site mutation rates.
     """
     if fname is not None:
         if fname.endswith(".npy"):
@@ -995,7 +1023,16 @@ def get_rmap(
     L=None
 ):
     """
-    Loads a recombination map, or builds a uniform one if `r` and `L` are given.
+    Load a recombination map, or build a uniform one if `r` and `L` are given.
+
+    :param fname: Path to recombination map file
+    :param pos_col: Column in the recombination map file from which to load
+        genomic coordinates
+    :param rate_col: Column from which to load recombination rates.
+    :param r: Uniform recombination rate (default None), used to build a
+        uniform map if `fname` is None.
+    :param L: Chromosome length, used to build a uniform recombination map if
+        `r` is not None and `fname` is None.
     """
     if fname is not None:
         rmap = Util.load_recombination_map(
@@ -1009,6 +1046,21 @@ def get_rmap(
 def get_elements(fnames, umap, window_size=1000, verbose=False, L=None):
     """
     Load elements and element mutation rates.
+
+    :param fnames: list of BED files to load.
+    :param umap: NumPy array of site mutation rates.
+    :param window_size: Window size to use when aggregating elements (default
+        1000).
+    :param verbose: If True (default False), reports how many redundant sites
+        (sites which belong to more than one class of element) are eliminated
+        from each class.
+    :param L: Chromosome length (defaults to length of `umap`).
+
+    :returns: 3-tuple of:
+        `elements`, a list of arrays of intervals assigned to each element
+        `windows`, an array of window intervals
+        `U_arrs`, a list of arrays (one for each element class). A given array
+            holds total deleterious mutation rates for each window.
     """
     if L is None:
         L = len(umap)
@@ -1025,7 +1077,6 @@ def get_elements(fnames, umap, window_size=1000, verbose=False, L=None):
 def main():
     parser = argparse.ArgumentParser(prog="bgshr")
     subparsers = parser.add_subparsers(dest="subcommand")
-    # Subcommands
     ComputePiCommand(subparsers)
     PredictBCommand(subparsers)
     FitNeCommand(subparsers)
@@ -1039,3 +1090,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

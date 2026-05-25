@@ -9,9 +9,6 @@ from scipy import stats
 import warnings
 
 
-# Lookup table handling.
-
-
 def load_lookup_table(df_name, sep=","):
     df = pandas.read_csv(df_name, sep=sep)
     return df
@@ -26,7 +23,7 @@ def subset_lookup_table(df, generation=0, Ns=None, Ts=None, uL=None):
         raise ValueError("Need to implement")
     if type(Ts) == list:
         raise ValueError("Need to implement")
-    
+
     df_sub = df[df["Generation"] == generation]
     if Ns is not None:
         df_sub = df_sub[df_sub["Ns"] == Ns]
@@ -265,9 +262,6 @@ def cap_max_lookup_table_B(df):
     return df_copy
 
 
-# Recombination maps.
-
-
 def build_uniform_rmap(r, L):
     """
     Builds a cumulative recombination map for given per-base recombination rate r.
@@ -427,9 +421,6 @@ def inverse_haldane_map_function(rs):
     return np.abs(-0.5 * np.log(1 - 2 * rs))
 
 
-# Mutation maps, rates
-
-
 def compute_window_averages(windows, site_map):
     """
     Computes windowed averages of some site-resolution quantity `site_map`. It
@@ -512,6 +503,8 @@ def compute_window_mutation_rates(windows, elements, u, fill_val="mean"):
 
 def decompose_elements(windows, elements):
     """
+    Break an array of intervals (`elements`) up at the boundaries of `windows`,
+    assigning each element interval to a window with an index.
     """
     elem_mask = elements_to_mask(elements)
     index = []
@@ -528,7 +521,7 @@ def decompose_elements(windows, elements):
 
 def filter_empty_windows(windows, U_arrs):
     """
-    Filters out windows with deleterious mutation rate = 0
+    Filter out windows with deleterious mutation rate = 0
     """
     tot_U = np.sum(U_arrs, axis=0)
     keep = tot_U > 0
@@ -541,11 +534,11 @@ def compute_element_mutation_rates(elements, u_arr, fill_val="mean"):
     """
     Return an array of average mutation rates for each interval in `elements`.
 
-    :param elements:
-    :param u_arr:
-    :param fill_val:
+    :param elements: Array of intervals assigned to some DFE class.
+    :param u_arr: Site mutation rate array.
+    :param fill_val: Value to use when all data in an element is missing
+        (default "mean" uses the mean across non-missing data in `u_arr`).
     """
-
     # Elements shouldn't extend beyond the end of the chromosome
     assert elements[-1, 1] <= len(u_arr)
     assert not np.any(np.isnan(u_arr))
@@ -582,66 +575,6 @@ def split_mutation_windows(windows, U_arrs):
     return all_elements, avg_u_arrs
 
 
-def load_mutation_arrays(
-    mut_fname,
-    annot_fnames,
-    keep_zeros=False,
-    masked=False
-):
-    """
-    Load arrays of deleterious mutation rates.
-
-    :param mut_fname: File with average mutation rates
-    :param annot_fnames: Files with deleterious site counts and `scale`, the
-        ratio of average deleterious u to average u, for one or more classes
-        of constrained sites.
-    :param keep_zeros: If False (default), remove windows without deleterious
-        sites. Windows are shared across constraint classes.
-    :param masked: If True (default False), load data from the `masked` columns
-        of `annot_fnames`.
-    """
-    mut_tbl = pandas.read_csv(mut_fname)
-    windows = np.array([mut_tbl["chromStart"], mut_tbl["chromEnd"]]).T
-    if masked:
-        avg_mut = np.array(mut_tbl["avg_mut_masked"])
-    else:
-        avg_mut = np.array(mut_tbl["avg_mut"])
-    avg_mut[np.isnan(avg_mut)] = 0
-    del_sites_arrs = []
-    u_arrs = []
-    U_arrs = []
-    for fname in annot_fnames:
-        annot_tbl = pandas.read_csv(fname)
-        annot_windows = np.array(
-            [annot_tbl["chromStart"], annot_tbl["chromEnd"]]).T
-        if not np.all(annot_windows == windows):
-            raise ValueError(
-                "Annotation/mutation tables have mismatching windows")
-        if masked:
-            del_sites = np.array(annot_tbl["del_sites_masked"])
-            scale = np.array(annot_tbl["scale_masked"])
-        else:
-            del_sites = np.array(annot_tbl["del_sites"])
-            scale = np.array(annot_tbl["scale"])
-        scale[np.isnan(scale)] = 0
-        u_arr = scale * avg_mut
-        U_arr = del_sites * u_arr
-        del_sites_arrs.append(del_sites)
-        u_arrs.append(u_arr)
-        U_arrs.append(U_arr)
-    # Remove windows with 0 total deleterious sites
-    if not keep_zeros:
-        keep = np.where(np.sum(del_sites_arrs, axis=0) > 0)[0]
-        windows = windows[keep]
-        del_sites_arrs = [arr[keep] for arr in del_sites_arrs]
-        u_arrs = [arr[keep] for arr in u_arrs]
-        U_arrs = [arr[keep] for arr in U_arrs]
-    return windows, del_sites_arrs, u_arrs, U_arrs
-
-
-# Elements/constraint windows
-
-
 def read_bedfile(fname, filter_col=None, sep=None, L=None, get_chrom=False):
     """
     Load a bed file, returning an array of intervals and the chromosome number.
@@ -651,7 +584,6 @@ def read_bedfile(fname, filter_col=None, sep=None, L=None, get_chrom=False):
         `filter_col` has an entry matching `filter_col[key]`.
     :param str sep: Optional separator string, defaults to "\t" if None.
     """
-
     # Check whether there is a header
     if fname.endswith(".gz"):
         with gzip.open(fname, "rb") as fin:
@@ -850,7 +782,7 @@ def intersect_elements(elements, L=None):
     return elements_out
 
 
-def combine_elements(elements, L=None):
+def merge_elements(elements, L=None):
     """
     Returns an array of intervals representing all sites present in any
     interval array in `elements`.
@@ -899,9 +831,6 @@ def subtract_elements(elements0, elements1, L=None):
         mask[start:end] = True
     elements_out = mask_to_elements(mask)
     return elements_out
-
-
-# DFE discretization and weighting
 
 
 def integrate_with_weights(vals, weights, u_fac=1):
@@ -1001,9 +930,6 @@ def weights_gamma_neutral_dfe(ss, shape, scale, p_neu):
     weights *= (1 - p_neu)
     weights[-1] = p_neu
     return weights
-
-
-# Scaling and manipulating tables
 
 
 def scale_genome_table(df, scale):
@@ -1114,58 +1040,6 @@ def scale_genome_table(df, scale):
     return df_out
 
 
-# Assorted utilities
-
-
-def get_max_distances(df, tolerance=1e-10):
-    """
-    """
-    ss = np.sort(np.unique(df["s"]))
-    thresholds = np.zeros(len(ss), dtype=np.float64)
-    for i, s in enumerate(ss):
-        Bs = np.array(df[df["s"] == s]["B"])
-        Ms = np.array(df[df["s"] == s]["M"])
-        assert np.all(np.sort(Ms) == Ms)
-        deviations = 1 - Bs
-        beyond_tolerance = np.where(deviations < tolerance)[0]
-        if np.all(deviations > 0):
-            thresholds[i] = np.inf
-        else:
-            idx = beyond_tolerance[0]
-            thresholds[i] = Ms[idx]
-    return thresholds
-
-
-def convert_bedgraph_mutation_map(
-    fname,
-    out_fname,
-    chrom_col="chr",
-    start_col="start", 
-    end_col="end", 
-    rate_col="u"
-):
-    """
-    Construct a bedgraph file formatted for use in the B prediction pipeline
-    from a bedgraph file with only a `rate_col`.
-    """
-    df = pandas.read_csv(fname)
-    starts = np.array(df[start_col])
-    ends = np.array(df[end_col])
-    avg_mut = np.array(df[rate_col])
-    num_sites = ends - starts
-    data = {
-        "chrom": df[chrom_col],
-        "chromStart": starts,
-        "chromEnd": ends,
-        "num_sites": num_sites, 
-        "avg_mut": avg_mut,
-        "num_sites_masked": num_sites, 
-        "avg_mut_masked": avg_mut
-    }
-    pandas.DataFrame(data).to_csv(out_fname, index=False)
-    return
-
-
 def _get_time():
     """
     Return a string representing the time and date with yy-mm-dd format.
@@ -1189,16 +1063,3 @@ def write_bedfile(fname, intervals, chrom):
     pandas.DataFrame(data).to_csv(fname, index=False, sep="\t")
     return
 
-
-def write_uniform_mutation_interval(fname, L, u, chrom):
-    """
-    Write a one-line .csv file specifying an interval and uniform mutation rate. 
-    """
-    data = {
-        "chrom": [chrom],
-        "chromStart": [0],
-        "chromEnd": [L],
-        "rate": [u]
-    }
-    pandas.DataFrame(data).to_csv(fname, index=False)
-    return
