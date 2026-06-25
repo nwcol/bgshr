@@ -1,3 +1,6 @@
+"""
+Functions to compute diversity reduction using classical BGS theory.
+"""
 
 import numpy as np
 import pandas
@@ -9,6 +12,8 @@ from . import Util
 
 def extend_lookup_table(df_sub, ss, generation=0):
     """
+    Extend a lookup table to selection coefficients << -1 using classic BGS.
+
     Wraps CBGS extension functions for equilibrium/n-epoch lookup tables.
 
     :param df_sub: Lookup table to extend
@@ -38,6 +43,11 @@ def extend_lookup_table(df_sub, ss, generation=0):
 
     df_comb = pandas.concat([df_sub, df_new], ignore_index=True)
     return df_comb
+
+
+####################################
+# CBGS for equilibrium populations #
+####################################
 
 
 def reduction_CBGS(s, u, r, L=1):
@@ -470,8 +480,7 @@ def build_lookup_table_n_epoch(
     Ts,
     generations=None,
     uL=1e-8,
-    uR=1e-8
-):
+    uR=1e-8):
     # here Ns and Ts are numeric vector, not semi-colon separated vals on a string
     cols = [
         "r",

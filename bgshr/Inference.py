@@ -1,3 +1,6 @@
+"""
+Functions for demographic inference.
+"""
 
 import numpy as np
 from scipy import stats
@@ -171,6 +174,16 @@ def _get_pi_dfe(df, dfe):
     return pi_dfe
 
 
+def _get_gamma_weights(ss, shape, scale):
+    """For backwards compatability"""
+    return Util.weights_gamma_dfe(ss, shape, scale)
+
+
+def _get_gamma_neutral_weights(ss, shape, scale, p_neu):
+    """For backwards compatability"""
+    return Util.weights_gamma_neutral_dfe(ss, shape, scale, p_neu)
+
+
 def load_mask(mask_fname, L=None):
     """
     A mask can be provided as a fasta file or a bed file. File type is checked
@@ -202,3 +215,4 @@ def load_mask(mask_fname, L=None):
     else:
         raise ValueError("file type not recognized")
     return mask
+

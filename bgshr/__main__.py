@@ -1,5 +1,21 @@
 """
-Houses the command-line interface for fitting Ne and predicting B.
+The command-line interface for fitting Ne and predicting B.
+
+Usage
+-----
+$ bgshr predict_B -b annotations.bed -t lookup_tbl.csv --shapes 0.2 \
+    --scales 0.01 -o B_tbl.csv
+
+Notes
+-----
+The hierarchy of command classes for parsing command-line arguments is:
+Command
+    CommonCommand
+        ComputeCommand : for calculating a diversity landscape, with pre-
+            computed B map.
+        CommonPredictCommand : for functions which compute B.
+            PredictBCommand
+            FitNeCommand
 """
 
 import argparse
@@ -13,14 +29,7 @@ from bgshr import Util, ClassicBGS, Predict, Inference
 
 class Command():
     """
-    The hierarchy of command classes is:
-
-    Command
-        CommonCommand
-            ComputePiCommand
-            CommonPredictCommand
-                PredictBCommand
-                FitNeCommand
+    Primitive class for parsing terminal arguments.
     """
 
     def __init__(self, subparsers, subcommand):
@@ -302,8 +311,6 @@ class FitNeCommand(CommonPredictCommand):
 def compute_pi(args):
     """
     Load data and a precomputed B-map, then compute expected pi.
-
-    :param args: 
     """
 
     if args.verbose:
@@ -391,34 +398,33 @@ def compute_pi(args):
         bed_tbl = pandas.read_csv(args.bed[0], sep="\\s+")
         chrom_num = next(iter(bed_tbl[bed_tbl.columns[0]]))
 
-    # Calculate other quantities of interest
-    comb_elements = Util.combine_elements(elements)
-    element_mask = Util.elements_to_mask(comb_elements, L=L)
-    # Re-mask `site_pi` to retain only selectively constrained sites
-    del_sites_mask = np.logical_or(mask, element_mask)
-    site_pi.mask = del_sites_mask
-    exp_del_pi, del_sites = Util.compute_window_averages(out_windows, site_pi)
-
-    umap.mask = mask
-    avg_mut, _ = Util.compute_window_averages(out_windows, umap)
-    umap.mask = del_sites_mask
-    del_mut, _ = Util.compute_window_averages(out_windows, umap)
-
-    if args.verbose:
-        print(Util._get_time(), "computed other maps")
-
     data = {
         "chrom": [chrom_num] * len(out_windows),
         "chromStart": out_windows[:, 0],
         "chromEnd": out_windows[:, 1],
         "num_sites": num_sites,
-        "del_sites": del_sites,
-        "avg_mut": avg_mut,
-        "del_mut": del_mut,
-        "avg_rec": avg_rec,
         "exp_pi": exp_pi,
-        "exp_del_pi": exp_del_pi,
-        "B": foc_Bs}
+        "B": foc_B}
+
+    # Calculate other quantities of interest
+    if args.rich:
+        comb_elements = Util.combine_elements(elements)
+        element_mask = Util.elements_to_mask(comb_elements, L=L)
+        # Re-mask `site_pi` to retain only selectively constrained sites
+        del_sites_mask = np.logical_or(mask, element_mask)
+        site_pi.mask = del_sites_mask
+        data["exp_del_pi"], data["del_sites"] = Util.compute_window_averages(
+            out_windows, site_pi)
+
+        umap.mask = mask
+        data["avg_mut"], _ = Util.compute_window_averages(out_windows, umap)
+        umap.mask = del_sites_mask
+        data["del_mut"], _ = Util.compute_window_averages(out_windows, umap)
+        data["avg_rec"] = Util.compute_average_recombination_rate(
+            out_windows, rmap)
+
+        if args.verbose:
+            print(Util._get_time(), "computed other maps")
 
     output = pandas.DataFrame(data)
     output.to_csv(args.out, index=False)
@@ -430,9 +436,7 @@ def compute_pi(args):
 
 def predict_B(args):
     """
-    Loads data and computes expected B and pi.
-
-    :param args:
+    Compute expected BGS and diversity landscapes.
     """
 
     if args.verbose:
@@ -527,7 +531,6 @@ def predict_B(args):
         foc_B = Bmap(midpoints)
 
     exp_pi, num_sites = Util.compute_window_averages(out_windows, site_pi)
-
     if args.verbose:
         print(Util._get_time(), "computed expected pi")
 
@@ -584,7 +587,7 @@ def predict_B(args):
 
 def fit_Ne(args):
     """
-    Fits `Ne` to observed data.
+    Fit `Ne` to observed diversity data.
     """
 
     t0 = time.time()
@@ -698,27 +701,8 @@ def fit_Ne(args):
         foc_B = Bmap(midpoints)
 
     exp_pi, num_sites = Util.compute_window_averages(out_windows, site_exp_pi)
-
     if args.verbose:
         print(Util._get_time(), "computed windowed expected pi")
-
-    # Calculate other quantities of interest
-    comb_elements = Util.combine_elements(elements)
-    element_mask = Util.elements_to_mask(comb_elements, L=L)
-    # Re-mask `site_exp_pi` to retain only selectively constrained sites
-    del_sites_mask = np.logical_or(mask, element_mask)
-    site_exp_pi.mask = del_sites_mask
-    exp_del_pi, del_sites = Util.compute_window_averages(
-        out_windows, site_exp_pi)
-
-    umap.mask = mask
-    avg_mut, _ = Util.compute_window_averages(out_windows, umap)
-    umap.mask = del_sites_mask
-    del_mut, _ = Util.compute_window_averages(out_windows, umap)
-    avg_rec = Util.compute_average_recombination_rate(out_windows, rmap)
-
-    if args.verbose:
-        print(Util._get_time(), "computed other maps")
 
     # Find the chromosome number
     if chrom_num is None:
@@ -730,13 +714,28 @@ def fit_Ne(args):
         "chromStart": out_windows[:, 0],
         "chromEnd": out_windows[:, 1],
         "num_sites": num_sites,
-        "del_sites": del_sites,
-        "avg_rec": avg_rec,
-        "avg_mut": avg_mut,
-        "del_mut": del_mut,
         "exp_pi": exp_pi,
-        "exp_del_pi": exp_del_pi,
         "B": foc_B}
+
+    # Calculate other quantities of interest
+    if args.rich:
+        comb_elements = Util.combine_elements(elements)
+        element_mask = Util.elements_to_mask(comb_elements, L=L)
+        # Re-mask `site_pi` to retain only selectively constrained sites
+        del_sites_mask = np.logical_or(mask, element_mask)
+        site_pi.mask = del_sites_mask
+        data["exp_del_pi"], data["del_sites"] = Util.compute_window_averages(
+            out_windows, site_pi)
+
+        umap.mask = mask
+        data["avg_mut"], _ = Util.compute_window_averages(out_windows, umap)
+        umap.mask = del_sites_mask
+        data["del_mut"], _ = Util.compute_window_averages(out_windows, umap)
+        data["avg_rec"] = Util.compute_average_recombination_rate(
+            out_windows, rmap)
+
+        if args.verbose:
+            print(Util._get_time(), "computed other maps")
 
     # Save interference correction rounds
     if args.save_corrs:

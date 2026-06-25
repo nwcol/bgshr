@@ -1,3 +1,6 @@
+"""
+Functions to load and manipulate lookup tables and genomic maps.
+"""
 
 from datetime import datetime
 import gzip
@@ -7,6 +10,11 @@ from scipy import interpolate
 from scipy import integrate
 from scipy import stats
 import warnings
+
+
+# -----------------------------------------------------------------------------
+# Lookup table handling
+# -----------------------------------------------------------------------------
 
 
 def load_lookup_table(df_name, sep=","):
@@ -85,6 +93,10 @@ def generate_cubic_splines(df_sub, use_M=False):
 def generate_linear_splines(df_sub, use_M=False):
     """
     Generate linear splines to interpolate B-values across r.
+
+    :param df_sub: Lookup table
+    :param use_M: If True (Default False), interpolation is performed on
+        genetic map distances in Morgans from column "M" of `df_sub`.
     """
     # Check that only a single entry exists for each item
     assert len(np.unique(np.array(df_sub["Ts"]))) == 1
@@ -118,13 +130,8 @@ def generate_linear_splines(df_sub, use_M=False):
 
 def scale_lookup_table(df, N_target):
     """
-    Takes an equilibrium lookup table created with moments++ and scales physical
-    parameters r, s, u by N_ref / N_target, so that the table can be used to
-    make predictions with N_e = N_target.
-
-    `N_ref` is automatically determined with the `Ns` column of the input table.
-    If the table is not an equilibrium table, N_ref is taken to be the ancestral
-    population size.
+    Scale physical parameters of a lookup table so that the table corresponds
+    to a target effective population size.
 
     If scaling places any `r` values > 0.5, these rows are dropped from the
     table.
@@ -262,6 +269,11 @@ def cap_max_lookup_table_B(df):
     return df_copy
 
 
+# -----------------------------------------------------------------------------
+# Recombination map handliing
+# -----------------------------------------------------------------------------
+
+
 def build_uniform_rmap(r, L):
     """
     Builds a cumulative recombination map for given per-base recombination rate r.
@@ -329,8 +341,7 @@ def load_recombination_map(
     L=None,
     scaling=1,
     pos_col="Position(bp)",
-    rate_col="Rate(cM/Mb)"
-):
+    rate_col="Rate(cM/Mb)"):
     """
     Get positions and rates to build recombination map.
 
@@ -369,8 +380,7 @@ def load_bedgraph_recombination_map(
     scaling=1,
     start_col="start",
     end_col="end",
-    rate_col="rate"
-):
+    rate_col="rate"):
     """
     Load a recombination map stored in bedgraph format. If L is given, the map
     is truncated to end at position L- if L exceeds the length of the map, an 
@@ -419,6 +429,11 @@ def inverse_haldane_map_function(rs):
     Haldane's map functon.
     """
     return np.abs(-0.5 * np.log(1 - 2 * rs))
+
+
+# -----------------------------------------------------------------------------
+# Calculating average and aggregate mutation rates
+# -----------------------------------------------------------------------------
 
 
 def compute_window_averages(windows, site_map):
@@ -470,6 +485,8 @@ def build_site_map(intervals, values, L=None):
 
 def compute_window_mutation_rates(windows, elements, u, fill_val="mean"):
     """
+    Calculate the average mutation rates of sites in `elements`, aggregated
+    in arbitrary genomic `windows`.
     """
     if np.isscalar(u):
         L = windows[-1, 1]
@@ -561,7 +578,7 @@ def compute_element_mutation_rates(elements, u_arr, fill_val="mean"):
 
 def split_mutation_windows(windows, U_arrs):
     """
-    Makes inputs to `Bvals_fast` comport to `Bvals_dfes`.
+    Make inputs to `Predict.Bvals_fast` comport to `Predict.Bvals_dfes`.
     """
     all_elements = []
     avg_u_arrs = []
@@ -573,6 +590,11 @@ def split_mutation_windows(windows, U_arrs):
         avg_u = U_arr[keep] / n_sites
         avg_u_arrs.append(avg_u)
     return all_elements, avg_u_arrs
+
+
+# -----------------------------------------------------------------------------
+# Loading/manipulating BED files and genomic elements
+# -----------------------------------------------------------------------------
 
 
 def read_bedfile(fname, filter_col=None, sep=None, L=None, get_chrom=False):
@@ -691,6 +713,7 @@ def collapse_elements(elements):
 
 def break_up_elements(elements, max_size=500):
     """
+    Split any elements longer than `max_size` up into contiguous intervals.
     """
     elements_br = []
     for l, r in elements:
@@ -732,7 +755,7 @@ def resolve_elements(elements, L=None, verbose=False):
 
 def elements_to_mask(elements, L=None):
     """
-    Returns an array which equals False within `elements` and True elsewhere.
+    Return an array which equals False within `elements` and True elsewhere.
     """
     if L is None:
         L = elements[-1, 1]
@@ -833,9 +856,14 @@ def subtract_elements(elements0, elements1, L=None):
     return elements_out
 
 
+# -----------------------------------------------------------------------------
+# DFEs and integration
+# -----------------------------------------------------------------------------
+
+
 def integrate_with_weights(vals, weights, u_fac=1):
     """
-    Takes weighted product of `vals`.
+    Take the weighted product of `vals`.
     """
     if len(vals) != len(weights):
         raise ValueError("values and weights are not same length")
@@ -845,7 +873,7 @@ def integrate_with_weights(vals, weights, u_fac=1):
 
 def integrate_with_dfe(vals, ss, dfe, u_fac=1):
     """
-    Computes DFE weights and uses them to integrate across `vals`.
+    Compute DFE weights and uses them to integrate across `vals`.
 
     :param vals: Values to integrate
     :param ss: Array of selection coefficients
@@ -877,7 +905,7 @@ def get_dfe_weights(ss, dfe):
 
 def weights_gamma_dfe(ss, shape, scale):
     """
-    Computes discretized weights for selection coefficient grid `ss` using a
+    Compute discretized weights for selection coefficient grid `ss` using a
     gamma distribution.
 
     Zero weight is placed on the bin s = 0.
@@ -896,26 +924,17 @@ def weights_gamma_dfe(ss, shape, scale):
         raise ValueError("selection values are not sorted")
     assert ss[-1] == [0]
     midpoints = (ss[1:] + ss[:-1]) / 2
+    grid = np.concatenate(([-np.inf], midpoints[:-1], [0, 0]))
     weights = np.zeros(len(ss))
     cdf = lambda x: stats.gamma.cdf(-x, shape, scale=scale)
     for i in range(len(ss)):
-        # The bin about s = -1 extends to -infinity
-        if i == 0 :
-            weights[i] = 1 - cdf(midpoints[0])
-        # The s = 0 bin receives 0 mass
-        elif i == len(ss) - 1:
-            weights[i] = 0
-        # The smallest |s| bin above s = 0 receives all density down to s = 0
-        elif i == len(ss) - 2:
-            weights[i] = cdf(midpoints[-1])
-        else:
-            weights[i] = cdf(midpoints[i]) - cdf(midpoints[i + 1])
+        weights[i] = cdf(grid[i]) - cdf(grid[i + 1])
     return weights
 
 
 def weights_gamma_neutral_dfe(ss, shape, scale, p_neu):
     """
-    Computes discretized weights for selection coefficient grid `ss` using a
+    Compute discretized weights for selection coefficient grid `ss` using a
     gamma neutral distribution. Exactly `p_neu` mass is placed on the bin
     where s = 0.
 
@@ -932,9 +951,14 @@ def weights_gamma_neutral_dfe(ss, shape, scale, p_neu):
     return weights
 
 
+# -----------------------------------------------------------------------------
+# Misc.
+# -----------------------------------------------------------------------------
+
+
 def scale_genome_table(df, scale):
     """
-    Scales a table with genomic information, `df`, to a coarser resolution
+    Scale a table with genomic information, `df`, to a coarser resolution
     (larger window sizes).
 
     Tables must have these columns:

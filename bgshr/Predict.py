@@ -1,3 +1,6 @@
+"""
+Functions to predict B-values using lookup tables and genomic maps.
+"""
 
 from concurrent import futures
 import numpy as np
@@ -10,11 +13,74 @@ from . import Util, ClassicBGS, Predict
 
 
 def get_Bmap(xs, Bs):
-    """
-    Get a function that interpolates B-values at non-focal sites, using cubic
-    splines.
-    """
+    """Get a function that interpolates B-values using cubic splines."""
     return interpolate.CubicSpline(xs, Bs, bc_type="natural")
+
+
+# -----------------------------------------------------------------------------
+# Loop-based prediction functions
+# -----------------------------------------------------------------------------
+
+
+def Bvals_dfe(
+    xs,
+    splines,
+    ss=None,
+    u_arrs=[],
+    L=None,
+    rmap=None,
+    r=None,
+    dfe_elements=[],
+    max_r=0.1,
+    Bmap=None,
+    dfes=None):
+    """
+    Predict diversity reductions for one or more DFE classes using `Bvals` and
+    integrate across respective DFEs.
+
+    :param xs: Array of focal sites
+    :param splines: Dictionary of splines built from a lookup table using
+        Util.generate_cubic_splines or Util.generate_linear_splines
+    :param ss: List of selection coefficients to consider
+    :param u_arrs: List of DFE-specific element mutation rates
+    :param L: Optional chromosome length, used to construct a uniform rec. map
+        if `r` is given.
+    :param rmap: Recombination map function
+    :param r: Optional uniform recombination map (default None)
+    :param dfe_elements: List of elements arrays: one for each DFE.
+    :param max_r: Maximum recombination distance between element and focal site
+        (default 0.1)
+    :param Bmap: For applying the interference correction
+    :param dfes: List of dictionaries, each specifying the parameters of a
+        gamma or gamma-neutral DFE. See Util.get_dfe_weights.
+    """
+    if dfes is None:
+        raise ValueError("you must provide dfes")
+    if dfe_elements is None:
+        raise ValueError("you must provide dfe_elements")
+    assert len(u_arrs) == len(dfe_elements)
+    assert len(dfe_elements) == len(dfes)
+
+    if ss is None:
+        ss = np.sort(list(set([k[1] for k in splines.keys()])))
+
+    Bs = []
+    for i in range(len(dfe_elements)):
+        dfe_Bs = Bvals(
+            xs,
+            ss,
+            splines,
+            u=u_arrs[i],
+            L=L,
+            rmap=rmap,
+            r=r,
+            elements=dfe_elements[i],
+            max_r=max_r,
+            bmap=Bmap)
+        Bs.append(Util.integrate_with_dfe(dfe_Bs, ss, dfes[i]))
+
+    Bs_out = np.prod(Bs, axis=0)
+    return Bs_out
 
 
 def Bvals(
@@ -29,8 +95,7 @@ def Bvals(
     elements=[],
     max_r=0.1,
     r_dists=None,
-    B_elem=None
-):
+    B_elem=None):
     """
     Get predicted reduction for given s-value, assuming a constant per-base
     deleterious mutation rate of u within elements.
@@ -164,14 +229,8 @@ def _get_element_midpoints(elements):
 
 def _get_r_dists(xs, elements, rmap):
     """
-    Computes a matrix of recombination distances between focal sites `xs`
-    and constrained elements `elements`.
-
-    :param xs: Array of focal sites
-    :param elements: Array of element start/end positions
-    :param rmap: Recombination map function
-
-    :returns: Array of distances with shape (len(elements), len(xs))
+    Compute a matrix of recombination distances with shape (len(elements),
+    len(xs)).
     """
     x_midpoints = np.mean(elements, axis=1)
     r_midpoints = rmap(x_midpoints)
@@ -182,18 +241,6 @@ def _get_r_dists(xs, elements, rmap):
 
 
 def _get_interpolated_svals(s_elem, s_vals):
-    """
-    Computes the nearest elements in the s-grid `s_vals` for an arbitrary
-    selection coefficient `s_elem`, and weights determined by its proximity to
-    each grid point.
-
-    For use in the interference correction.
-
-    :param s_elem: Scalar target s-coefficient
-    :param s_vals: Array of grid s-coefficients
-
-    :returns: Nearest values in the s-grid and corresponding weights
-    """
     s0 = s_vals[np.where(s_elem > s_vals)[0][-1]]
     s1 = s_vals[np.where(s_elem <= s_vals)[0][0]]
     p1 = (s_elem - s0) / (s1 - s0)
@@ -202,89 +249,9 @@ def _get_interpolated_svals(s_elem, s_vals):
     return s0, s1, p0, p1
 
 
-def Bvals_dfe(
-    xs,
-    splines,
-    ss=None,
-    u=None,
-    L=None,
-    rmap=None,
-    r=None,
-    elements=[],
-    max_r=0.1,
-    r_dists=None,
-    dfe=None,
-    Bmap=None):
-    """
-    Compute B-values using `Bvals` and integrate them across a given DFE.
-    """
-    if ss is None:
-        ss = np.sort(list(set([k[1] for k in splines.keys()])))
-
-    Bs = Bvals(
-        xs,
-        ss,
-        splines,
-        u=u,
-        L=L,
-        rmap=rmap,
-        r=r,
-        elements=elements,
-        max_r=max_r,
-        bmap=Bmap
-    )
-
-    if dfe is not None:
-        Bs_out = Util.integrate_with_dfe(Bs, ss, dfe)
-    else:
-        Bs_out = Bs
-    return Bs_out
-
-
-def Bvals_dfes(
-    xs,
-    splines,
-    ss=None,
-    u=None,
-    u_arrs=[],
-    L=None,
-    rmap=None,
-    r=None,
-    all_elements=[],
-    max_r=0.1,
-    Bmap=None,
-    dfes=None):
-    """
-    Predict B with input data structures matching `Bvals_fast`, but using the
-    prediction code of `Bvals`.
-    """
-    if shapes is None or scales is None:
-        raise ValueError("must provide gamma dfe shape and scale")
-
-    if ss is None:
-        ss = np.sort(list(set([k[1] for k in splines.keys()])))
-
-    if p_neus is None:
-        p_neus = [0] * len(all_elements)
-
-    Bs = []
-    for i in range(len(all_elements)):
-        Bs_i = Bvals_dfe(
-            xs,
-            splines,
-            ss=ss,
-            u=u_arrs[i],
-            L=L,
-            rmap=rmap,
-            r=r,
-            elements=all_elements[i],
-            max_r=max_r,
-            Bmap=Bmap,
-            dfe=dfes[i]
-        )
-        Bs.append(Bs_i)
-    Bs_out = np.prod(Bs, axis=0)
-    return Bs_out
+# -----------------------------------------------------------------------------
+# Vectorized prediction functions
+# -----------------------------------------------------------------------------
 
 
 def interference_Bvals(
@@ -302,26 +269,27 @@ def interference_Bvals(
     verbose=False):
     """
     Predict B with several rounds of interference correction, then return
-    B-arrays from each round of correction.
+    B-arrays from each round.
 
     See `Bvals_fast` for further documentation.
 
-    :param n_corrs: Number of interference corrections to perform (default 0).
-    :param B_unlinked: Optional unlinked B-value, representing diversity
-        reduction due to mutations on other chromosomes.
+    :param n_corrs: Number of interference corrections (default 0).
+    :param B_unlinked: Optional unlinked B-value (default None).
     :param verbose: If True (default False), print a report at the end of each
         round of prediction.
 
     :returns: List of arrays of B-values predicted in each round.
     """
+    Bmap = None
     if B_unlinked is None:
         B_unlinked = 1
-        Bmap = None
     else:
-        assert B_unlinked < 1
         L = max([windows[-1, 1], xs[-1]])
-        Bmap = get_Bmap([0, L], [B_unlinked, B_unlinked])
+        if B_unlinked < 1:
+            Bmap = get_Bmap([0, L], [B_unlinked, B_unlinked])
 
+    # Initial prediction; with interference correction for unlinked BGS, if
+    # `B_unlinked` is not None and has a value less than 1.
     Bs = Bvals_fast(
         xs,
         splines,
@@ -332,13 +300,13 @@ def interference_Bvals(
         dfes=dfes,
         Bmap=Bmap,
         chunk_size=chunk_size,
-        n_cores=n_cores
-    )
+        n_cores=n_cores)
     Bs *= B_unlinked
     interf_Bs = [Bs]
     if verbose:
         print(Util._get_time(), "completed initial B-prediction")
 
+    # Subseqent rounds of interference correction.
     for i in range(n_corrs):
         Bs0 = Bs
         Bmap = get_Bmap(xs, Bs0)
@@ -352,8 +320,7 @@ def interference_Bvals(
             dfes=dfes,
             Bmap=Bmap,
             chunk_size=chunk_size,
-            n_cores=n_cores
-        )
+            n_cores=n_cores)
         Bs *= B_unlinked
         interf_Bs.append(Bs)
         if verbose:
@@ -384,14 +351,14 @@ def Bvals_fast(
     to handle multiple DFEs efficiently.
 
     Features:
-    - Vectorization of prediction computations, which may be parallelized 
+    - Vectorization of prediction computations, which can be parallelized
       across several processor cores or performed in a loop.
 
     - If DFE parameters are given, integrates across B-values. Else, returns
       arrays with B-values for each selection coefficient.
 
     - Interference correction: local scaling of selection, recombination and
-      mutation is handled internally, when `Bmap` is given.
+      mutation is handled internally, if `Bmap` is given.
 
     - Handles an arbitrary number of DFEs.
 
@@ -419,8 +386,8 @@ def Bvals_fast(
     :param Bmap: Optional B-map for performing the interference correction or
         accounting for unlinked BGS (default None).
     :param chunk_size: Number of focal sites to handle at once in vectorized
-        computations on a single core. Smaller values (e.g., 100) may be 
-        desirable if many cores are used, to avoid memory overuse.
+        computations on a single CPU core. Smaller values (e.g., 100) may be
+        desirable if many cores are used, to avoid using too much memory.
     :param n_cores: Number of processor cores to use in computation (default 1)
 
     :returns: If DFEs were given, a single array of B-values of shape
@@ -439,7 +406,7 @@ def Bvals_fast(
             r = 1e-8
         rmap = Util.build_uniform_rmap(r, L)
 
-    # The function calls itself recursively to handle many focal sites
+    # The function calls itself recursively on `chunks` of focal sites.
     if len(xs) > chunk_size:
         # Set up "chunks"; continuous blocks of focal sites (xs)
         n_chunks = int(np.ceil(len(xs) / chunk_size))
@@ -460,7 +427,7 @@ def Bvals_fast(
             Bmap,
             chunk_size,
             n_cores
-        )
+            )
 
         # If several cores were alloted, parallelize computation across them
         if n_cores > 1:
@@ -489,7 +456,7 @@ def Bvals_fast(
             assert np.all(B_windows < 1)
             U_arrs = _adjust_mutation_arrays(U_arrs, windows, Bmap)
 
-        # Get grid of s and u values
+        # Retrieve the grid of s and u values
         uLs = np.sort(list(set([k[0] for k in splines.keys()])))
         if ss is None:
             ss = np.sort(list(set([k[1] for k in splines.keys()])))
@@ -500,7 +467,7 @@ def Bvals_fast(
         # Scale deleterious mutation rates by `uL` from the table
         U_arrs = [Us / uL for Us in U_arrs]
 
-        # Instantiate B arrays
+        # Initialize B arrays
         Bs = [np.ones((len(ss), len(xs))) for _ in U_arrs]
 
         # Compute a maximum distance for each s-coefficient
@@ -537,16 +504,14 @@ def Bvals_fast(
             for j, Us in enumerate(U_arrs):
                 Bs[j][i] = np.prod(bvals ** Us[bound0:bound1, None], axis=0)
 
-        # Integrate across Bs
+        # Integrate across the DFE if parameters were given.
         if dfes is not None:
             assert len(dfes) == len(U_arrs)
             Bs_out = np.prod([Util.integrate_with_dfe(Bs_dfe, ss, dfe)
                             for Bs_dfe, dfe in zip(Bs, dfes)], axis=0)
-
         # If no DFEs were given, return full Bs array
         else:
             Bs_out = Bs
-
     return Bs_out
 
 
@@ -566,16 +531,8 @@ def _get_s_facs(s_vals, s_grid, idx_0, idx_1):
 
 def _get_interference_bvals(s_windows, distances, splines):
     """
-    Computes unit B-values under the interference correction, for a particular
-    s-coefficient.
-
-    :param s_windows: Window selection coefficients; these are B*s, where B is
-        the local B-value from the last round of interference correction, and
-        s is a scalar selection coefficient.
-    :param distances: A precomputed matrix of distances between focal sites
-        and windows, with shape (len(windows), len(xs)), where xs is an array
-        of focal sites.
-    :param splines: Splines for interpolating B-values.
+    Compute unit B-values after scaling `s` locally for the interference
+    correction.
     """
     uL = next(iter(splines.keys()))[0]
     s_grid = np.sort([key[1] for key in splines])
@@ -594,16 +551,12 @@ def _get_interference_bvals(s_windows, distances, splines):
 
 
 def _get_distances(xs, windows, rmap):
-    """
-    Computes map distances between sites `xs` and the centers of `windows`.
-    """
+    """Compute genetic map distances between focal sites/elements"""
     return np.abs(_get_signed_distances(xs, windows, rmap))
 
 
 def _get_signed_distances(xs, windows, rmap):
-    """
-    Computes signed map distances between `xs` and `windows`.
-    """
+    """Compute signed genetic map distances between focal sites/elements"""
     window_mids = np.mean(windows, axis=1)
     window_map = rmap(window_mids)
     xs_map = rmap(xs)
@@ -616,9 +569,10 @@ def _get_signed_distances(xs, windows, rmap):
 
 def _adjust_mutation_arrays(U_arrs, windows, Bmap):
     """
-    Adjusts local deleterious mutation rate arrays recorded in a list `U_arrs`
-    by local B-values, computed using `windows` and `Bmap`.
+    Adjust local deleterious mutation rate arrays recorded in a list `U_arrs`
+    by local B-values for the interference correction.
     """
     window_Bs = _get_B_per_element(Bmap, windows)
     adjusted_U_arrs = [Us * window_Bs for Us in U_arrs]
     return adjusted_U_arrs
+
